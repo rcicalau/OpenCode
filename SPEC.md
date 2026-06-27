@@ -344,7 +344,7 @@ Default deployment provider:
 - Provider: `azure_openai`
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
-- Auth style: project-loadable `auth:AzureAuthClient` token provider
+- Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
 
 Development/test provider:
 
@@ -930,7 +930,7 @@ model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
 base_url_env = "AZURE_OPENAI_BASE_URL"
-auth_client = "auth:AzureAuthClient"
+auth_client = "codebuddy.azure_auth:AzureAuthClient"
 token_method = "get_token"
 model = "openai/gpt-5.4"
 verify_ssl = false
@@ -1290,7 +1290,7 @@ Deployment default:
 - Provider: `azure_openai`
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
-- Auth style: project-loadable `auth:AzureAuthClient` token provider
+- Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
 
 Development/test default:
 

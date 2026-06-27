@@ -55,7 +55,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(loaded.config["model"]["roles"]["main"]["model"], "openai/gpt-5.4")
         provider = loaded.config["model"]["providers"]["azure_openai"]
         self.assertEqual(provider["base_url_env"], "AZURE_OPENAI_BASE_URL")
-        self.assertEqual(provider["auth_client"], "auth:AzureAuthClient")
+        self.assertEqual(provider["auth_client"], "codebuddy.azure_auth:AzureAuthClient")
         self.assertEqual(provider["token_method"], "get_token")
         self.assertFalse(provider["verify_ssl"])
 

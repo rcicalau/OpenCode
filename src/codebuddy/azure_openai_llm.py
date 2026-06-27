@@ -11,7 +11,7 @@ from .llm import LLMResponse, Message
 from .tool_calls import parse_native_tool_calls
 
 
-DEFAULT_AUTH_CLIENT = "auth:AzureAuthClient"
+DEFAULT_AUTH_CLIENT = "codebuddy.azure_auth:AzureAuthClient"
 DEFAULT_TOKEN_METHOD = "get_token"
 
 

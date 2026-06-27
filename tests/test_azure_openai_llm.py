@@ -9,7 +9,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.auth import auth_check
-from codebuddy.azure_openai_llm import AzureAuthOpenAIClient
+from codebuddy.azure_openai_llm import AzureAuthOpenAIClient, load_auth_token
+from codebuddy.errors import ConfigError
 from codebuddy.llm import Message
 
 
@@ -104,6 +105,7 @@ class AzureOpenAILlmTests(unittest.TestCase):
         client = AzureAuthOpenAIClient(
             base_url="https://aimark.example/openai/v1",
             model="openai/gpt-5.4",
+            auth_client="auth:AzureAuthClient",
             project_root=self.root,
             verify_ssl=False,
             timeout_seconds=12,
@@ -158,6 +160,13 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(captured["headers"]["Authorization"], "Bearer project-token")
         self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "openai/gpt-5.4")
+
+    def test_bundled_default_auth_client_fails_with_setup_guidance(self) -> None:
+        with self.assertRaises(ConfigError) as context:
+            load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
+
+        self.assertIn("AzureAuthClient is not configured", str(context.exception))
+        self.assertIn("src\\codebuddy\\azure_auth.py", str(context.exception))
 
 
 if __name__ == "__main__":

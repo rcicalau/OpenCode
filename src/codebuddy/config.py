@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "providers": {
             "azure_openai": {
                 "base_url_env": "AZURE_OPENAI_BASE_URL",
-                "auth_client": "auth:AzureAuthClient",
+                "auth_client": "codebuddy.azure_auth:AzureAuthClient",
                 "token_method": "get_token",
                 "model": "openai/gpt-5.4",
                 "verify_ssl": False,

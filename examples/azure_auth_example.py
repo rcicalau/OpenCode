@@ -1,12 +1,12 @@
-"""Example project-local Azure auth bridge for Code Buddy.
+"""Example Azure auth bridge for Code Buddy.
 
-Copy this file to the root of the project you want Code Buddy to work on:
+Copy this file over the bundled Code Buddy auth hook:
 
-    auth.py
+    C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py
 
 Then replace the body of ``AzureAuthClient.get_token`` with your real Azure
 authentication code. Code Buddy loads this class with the default config value
-``auth_client = "auth:AzureAuthClient"``.
+``auth_client = "codebuddy.azure_auth:AzureAuthClient"``.
 """
 
 

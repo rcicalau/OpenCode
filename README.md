@@ -81,7 +81,7 @@ From the project you want Code Buddy to work on, run:
 powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot . -BaseUrl "https://your-endpoint/openai/v1"
 ```
 
-This creates `<project>\auth.py`, creates `<project>\.pyagent\config.toml`, and persists `AZURE_OPENAI_BASE_URL`. Edit the generated `auth.py` and replace the template `AzureAuthClient.get_token()` body with your real workspace auth code.
+This creates `<project>\.pyagent\config.toml`, persists `AZURE_OPENAI_BASE_URL`, and points you at the bundled auth hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py` and replace `AzureAuthClient.get_token()` with your real workspace auth code.
 
 You can also set the endpoint URL manually:
 
@@ -89,7 +89,7 @@ You can also set the endpoint URL manually:
 setx AZURE_OPENAI_BASE_URL "https://your-endpoint/openai/v1"
 ```
 
-Close and reopen `cmd.exe`. Code Buddy then loads `auth:AzureAuthClient` from the selected project root, calls its `get_token()` method, and passes that token to the OpenAI Python SDK for every model request. The default provider config is:
+Close and reopen `cmd.exe`. Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree, calls its `get_token()` method, and passes that token to the OpenAI Python SDK for every model request. The default provider config is:
 
 ```toml
 [model.roles.main]
@@ -98,7 +98,7 @@ model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
 base_url_env = "AZURE_OPENAI_BASE_URL"
-auth_client = "auth:AzureAuthClient"
+auth_client = "codebuddy.azure_auth:AzureAuthClient"
 token_method = "get_token"
 verify_ssl = false
 ```
@@ -150,7 +150,11 @@ Each project gets its own `.pyagent` state, so opening Code Buddy in project A r
 
 ## Persistent API Keys
 
-API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses your project-local `auth.py` file:
+API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses the bundled OpenCode auth hook:
+
+```text
+C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py
+```
 
 ```python
 class AzureAuthClient:
