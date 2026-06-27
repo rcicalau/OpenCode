@@ -1,18 +1,68 @@
 # Code Buddy Specification
 
-Status: Draft v0.1  
-Date: 2026-06-26  
+Status: Draft v0.2
+Date: 2026-06-27
 Working name: Code Buddy
 
 ## 1. Summary
 
-Code Buddy is a Python-implemented, Windows-only, terminal-first coding agent inspired by tools like Claude Code, Codex, and OpenCode. It uses an API-hosted LLM, with an Azure-authenticated OpenAI-compatible `openai/gpt-5.4` deployment provider/model and Perplexity as the development/test provider, and operates inside a local project workspace.
+Code Buddy is a Python-implemented, Windows-only, terminal-first coding agent inspired by tools like Claude Code, Codex, and OpenCode. It uses an API-hosted LLM, with an Azure-authenticated OpenAI-compatible `openai/gpt-5.4` deployment provider/model and Perplexity as the development/test provider, and operates inside one explicitly selected local project workspace.
 
 "Python-only" means Code Buddy itself is implemented in Python and does not require Node.js. It may inspect and edit any text-based project on a best-effort basis, while Python projects receive first-class support.
 
 The core promise is not merely "chat with files." Code Buddy must safely understand a project, execute useful development workflows, edit files reliably, validate its work, preserve continuity across context loss, and recover cleanly after interruptions.
 
 The most important v1 quality bar is reliable, non-destructive editing. All mutating actions must pass through deterministic brokers, be journaled, and be reversible where practical.
+
+## 1.1 Refined V1 Non-Negotiables
+
+Prototype testing exposed a core requirement: Code Buddy is not "the OpenCode repo running tools." Code Buddy is a project-bound agent runtime. The implementation repository and the target project are separate concepts at all times.
+
+Runtime and launch requirements:
+
+- Code Buddy must run without being packaged as an executable.
+- Code Buddy may also ship as an executable later.
+- Non-executable use must still be a simple terminal call from any project, such as `buddy` after setup or a single launcher command.
+- Users must not need to manually set `PYTHONPATH`, pass source paths, or export per-run variables for normal use.
+- When started from a terminal inside project X, project X is the default target project.
+- If a folder picker is shown, it must open at the process launch directory, not at the Code Buddy implementation repo and not at an old remembered project.
+- Explicit `--root` or an explicit folder-picker selection wins over the launch directory.
+- A last-used project may be offered only as a secondary convenience; it must never override the current launch directory.
+
+Project binding requirements:
+
+- Every chat, objective, file operation, git operation, command, journal, transcript, work plan, index, and compaction artifact is bound to the selected project root.
+- The Code Buddy implementation repo must never become the implicit target merely because the launcher lives there.
+- Runtime UI should display the active project root clearly.
+- Any attempt by the model or tool layer to read or mutate the Code Buddy source tree while the target project is different must be treated like outside-project access and require policy handling.
+- Project-local state lives under `<project>/.pyagent/`.
+- Conversation history lives under `<project>/.pyagent/sessions/<session-id>/conversation.jsonl`.
+- Context compaction must use the project-local conversation history, ledger, journal, work plans, and index.
+
+Authentication and provider requirements:
+
+- Deployment auth is always the Azure/AI Mark client shared with the workspace.
+- The deployment provider must import auth from `codebuddy.ai_mart`.
+- The deployment provider must import the endpoint/base URL from `codebuddy.ai_mart`; it must not require an endpoint URL system environment variable.
+- The required `ai_mart.py` contract is `auth_client.authenticate_broker().access_token` for the bearer token and `base_url` for the OpenAI-compatible endpoint.
+- The deployment model is `openai/gpt-5.4`.
+- Perplexity remains a development/test provider and may continue to use `PERPLEXITY_API_KEY`.
+
+Command and git requirements:
+
+- All commands run with cwd set to the selected project root unless an explicit project-safe subdirectory is requested.
+- Git commands operate on the selected project repo, not the Code Buddy repo.
+- Command policy outcomes must be deterministic: run, deny with a clear reason, or ask for approval once.
+- Once approval is given for a pending command or branch action, the approved action must execute exactly once and the pending approval must be cleared.
+- Code Buddy must not repeatedly ask for the same approval after it was granted.
+- Long-running commands must have visible progress, timeout handling, and a clean unblock path. Hanging silently is a product bug.
+
+Editing requirements:
+
+- All file creation, modification, rename, and delete operations must go through the edit broker or another deterministic broker with equivalent journaling and rollback behavior.
+- Edits must be scoped to the selected project root by default.
+- Malformed model tool calls must not crash or create partial edits. The runtime should repair, reject with a clear error, or ask the model for a corrected tool call within a bounded loop.
+- Successful edit objectives must prove that expected files changed before reporting success.
 
 ## 2. Product Goals
 
@@ -32,10 +82,14 @@ The most important v1 quality bar is reliable, non-destructive editing. All muta
 - Python 3.12+ implementation.
 - Windows-only support.
 - No Node.js runtime dependency for Code Buddy itself.
+- Runnable from source without packaging as an executable.
 - Installable and runnable through a documented Windows-first onboarding path.
+- Optionally packageable as an executable without changing runtime semantics.
+- Callable from any terminal after setup while binding to that terminal's launch project.
 - Terminal-first CLI/TUI.
 - Multiline input, bracketed paste support, history, and `$EDITOR` fallback.
 - Provider-neutral LLM layer with deployment default `azure_openai/openai/gpt-5.4`.
+- Deployment auth and endpoint loaded from `codebuddy.ai_mart`.
 - OpenAI-compatible API adapters for OpenAI and Perplexity.
 - Native tool/function-call support when available.
 - Structured text tool-call fallback when native tool calls are unavailable.
@@ -43,6 +97,7 @@ The most important v1 quality bar is reliable, non-destructive editing. All muta
 - Configurable tool registry.
 - Deterministic command broker with policy controls.
 - Deterministic edit broker with transactional safety.
+- Always-bound project root for chat, tools, git, commands, state, index, and history.
 - Project-root file access boundary by default.
 - Text-file-only direct edits.
 - Secret and sensitive-file protection.
@@ -60,7 +115,7 @@ The most important v1 quality bar is reliable, non-destructive editing. All muta
 
 ## 4. Non-Goals For V1
 
-- No GUI.
+- No full GUI beyond native OS dialogs such as folder picker.
 - No Node.js dependency.
 - No external telemetry.
 - No cloud sync.
@@ -97,12 +152,14 @@ Code Buddy is terminal-first.
 
 Expected entry points:
 
-- `codebuddy "explain this project"`
-- `codebuddy "add tests for the parser"`
-- `codebuddy chat`
-- `codebuddy --new`
+- `buddy`
+- `buddy "explain this project"`
+- `buddy "add tests for the parser"`
+- `buddy chat`
+- `buddy --new`
+- A direct source launcher for no-install use, for example `C:\path\to\CodeBuddy\run-buddy.cmd`
 
-The final executable name may change, but examples in this spec use `codebuddy`.
+The user-facing command is `buddy`. The Python package/module name is `codebuddy`.
 
 The interactive terminal experience must support:
 
@@ -125,7 +182,16 @@ Streaming requirements:
 - The terminal renderer must support displaying streamed assistant chunks.
 - Tool-using turns may choose non-streaming completion when that produces a simpler deterministic retry loop, but the transport layer must support both streamed content and streamed tool-call reconstruction.
 
-When launched without an explicit project root, the Windows entry point should open a native folder picker instead of requiring the user to paste a path. The selected project root owns its `.pyagent` state.
+When launched without an explicit project root, the Windows entry point should open a native folder picker instead of requiring the user to paste a path. The folder picker must default to the directory from which the user started Code Buddy. If Code Buddy was launched from `C:\work\project-x`, the picker opens at `C:\work\project-x`, even when the launcher code lives at `C:\tools\CodeBuddy`.
+
+Project root selection order:
+
+1. Explicit `--root`.
+2. Explicit folder-picker selection.
+3. Process launch directory.
+4. Last-used project only when the launch directory is unavailable or invalid.
+
+The selected project root owns its `.pyagent` state. The Code Buddy source repo is not the target project unless the user explicitly selects it.
 
 On every interactive spawn or one-shot prompt execution, Code Buddy must refresh a bounded project map before the user asks the first question. The map must be stored under the project root, not globally:
 
@@ -345,7 +411,9 @@ Default deployment provider:
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
 - Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
-- Default token bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default AI Mark bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `codebuddy.ai_mart`
+- Deployment default must not require `AZURE_OPENAI_BASE_URL`
 
 Development/test provider:
 
@@ -434,6 +502,16 @@ Command risk classes:
 - `confirm`: common but mutating commands that require approval in normal mode.
 - `deny`: dangerous commands blocked by default.
 
+Approval behavior:
+
+- A `confirm` command creates one pending approval with the exact command and cwd recorded.
+- Approval can be granted through `/approve`, `/a`, `yes`, or an equivalent UI affordance.
+- Once approved, the exact pending command executes once with cwd still scoped to the selected project.
+- After execution, the pending approval is cleared whether the command succeeds, fails, or times out.
+- A denied command does not enter the pending-approval loop. The agent explains the policy denial and asks for an alternate path if needed.
+- The agent must not ask for approval repeatedly for the same already-approved action.
+- The agent must not silently keep thinking while waiting for user approval.
+
 YOLO mode:
 
 - Skips `confirm` prompts.
@@ -501,6 +579,8 @@ Core requirements:
 
 - Text files only.
 - Project-root boundary by default.
+- File creation, replacement, append, rename, and delete must all use brokered operations.
+- The broker must reject target paths outside the selected project root unless policy explicitly permits the operation.
 - Reading outside the project root requires confirmation unless explicitly allowed by config.
 - Writing outside the project root requires confirmation and should usually be denied.
 - Sensitive paths are protected even inside the project root.
@@ -746,6 +826,8 @@ This memory is maintained by Code Buddy and should usually not be hand-edited.
 
 ## 26. Storage Layout
 
+All runtime state is project-local by default. The global config may hold defaults, but it must not hold the active conversation, active ledger, project index, work plans, or command/edit journal for a target project.
+
 Recommended project layout:
 
 ```text
@@ -910,13 +992,20 @@ Config files:
 
 Project config overrides or narrows global config. Config should not contain secrets directly. For development and testing, API keys should come from persistent Windows user environment variables.
 
+Deployment credential requirements:
+
+- Azure/AI Mark deployment auth is not configured through system environment variables in v1.
+- The provider imports `auth_client` and `base_url` from `codebuddy.ai_mart`.
+- `auth_client.authenticate_broker().access_token` is called for the bearer token.
+- `base_url` is used as the OpenAI-compatible endpoint.
+- `codebuddy doctor` must verify that `codebuddy.ai_mart` is importable, exposes the required names, and can return a token without printing secrets.
+
 Development/test credential requirements:
 
 - Perplexity dev/test traffic reads `PERPLEXITY_API_KEY`.
 - `setx PERPLEXITY_API_KEY "<key>"` is the canonical setup path.
 - `codebuddy auth set <provider>` may exist only as a thin convenience wrapper around the configured provider environment variable.
 - Code Buddy should clearly explain that `setx` affects future terminals only; already-open terminals must be restarted or given a temporary process-level variable.
-- Production authentication may use a different setup and is not part of this dev/test auth UX.
 - Auth status and doctor commands must print only key presence; raw API keys must never be displayed.
 
 Example config shape:
@@ -932,7 +1021,7 @@ provider = "azure_openai"
 model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
-base_url_env = "AZURE_OPENAI_BASE_URL"
+base_url_import = "codebuddy.ai_mart:base_url"
 auth_client = "codebuddy.azure_auth:AzureAuthClient"
 token_method = "get_token"
 model = "openai/gpt-5.4"
@@ -1294,7 +1383,9 @@ Deployment default:
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
 - Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
-- Default token bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default AI Mark bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `codebuddy.ai_mart`
+- No endpoint URL environment variable is required for the deployment default
 
 Development/test default:
 
@@ -1302,11 +1393,9 @@ Development/test default:
 - Model: `sonar-pro`, unless overridden
 - API style: OpenAI-compatible
 
-Blocking provider questions before MVP:
+Provider items to verify before MVP:
 
-- Base URL.
-- Authentication mechanism.
-- Environment variable names.
+- Exact `codebuddy.ai_mart` export names.
 - Request schema compatibility.
 - Streaming behavior.
 - Native tool-call behavior.
@@ -1533,11 +1622,29 @@ Potential post-v1 work:
 - Advanced semantic diffing.
 - Automatic PR creation.
 
+## Prototype Gap Checklist
+
+The current prototype must be brought into compliance with the refined requirements before it can be treated as production-ready. These are explicit implementation and test targets:
+
+- Rename or bridge the bundled AI Mark module to `codebuddy.ai_mart`; remove deployment dependence on `AZURE_OPENAI_BASE_URL`.
+- Import both deployment auth and deployment endpoint/base URL from `codebuddy.ai_mart`.
+- Ensure no-install and installed launch paths both preserve the user's launch directory as the default target project.
+- Ensure folder picker initial directory is the launch directory, not the Code Buddy source repo and not an old remembered project.
+- Ensure every runtime tool receives and enforces the selected project root.
+- Add black-box tests where Code Buddy is launched from a separate target repo while the implementation repo is elsewhere, then verify reads, writes, git, history, index, and logs stay inside the target repo.
+- Add regression tests proving a prompt such as "document `agent.py`" edits the selected target project file, not `src/codebuddy/agent.py` in the implementation repo.
+- Replace repeated approval text loops with a real approval state machine that executes the exact pending action once and clears it.
+- Treat malformed native tool-call JSON as recoverable model/tool protocol failure, not as a user-visible crash or silent loop.
+- Treat missing files and deleted files as normal tool errors returned to the model, not uncaught Python exceptions.
+- Add timeouts and progress events for model calls, command execution, git operations, indexing, validation, and tool loops.
+- Prove streaming works for ordinary assistant text and does not leave the UI stuck on `Thinking...`.
+- Verify successful edit objectives by checking expected file diffs before reporting success.
+- Keep conversation history, ledger, journal, work plans, compaction summaries, and project indexes under the selected project's `.pyagent` directory.
+
 ## 49. Open Questions
 
 These can be resolved during implementation:
 
-- Final CLI executable name.
 - Final TOML schema and schema versioning.
 - Preferred default keybindings.
 - Whether auto checkpoint commits are enabled by default or merely strongly recommended.
