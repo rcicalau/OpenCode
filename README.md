@@ -9,10 +9,10 @@ The product specification lives in [SPEC.md](SPEC.md).
 Use Python 3.12 or newer:
 
 ```powershell
-py -3.12 -m unittest discover -s tests
+python -m unittest discover -s tests
 ```
 
-The Windows `python` command may point at an older interpreter. Prefer the Python launcher command above.
+The `python` command must point at Python 3.12 or newer.
 
 ## Run Without Installing
 
@@ -28,7 +28,7 @@ With no arguments, it starts chat bound to the current folder. With arguments, i
 C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd "what does this project do?"
 ```
 
-The launcher sets `PYTHONPATH` for this process only. It does not install Code Buddy globally and does not change your PATH. If `C:\Users\RaduC\Documents\OpenCode\.venv\Scripts\python.exe` exists, it uses that Python; otherwise it uses `py -3.12`.
+The launcher sets `PYTHONPATH` for this process only. It does not install Code Buddy globally and does not change your PATH. If `C:\Users\RaduC\Documents\OpenCode\.venv\Scripts\python.exe` exists, it uses that Python; otherwise it uses `python`.
 
 ## Install The Buddy Command
 

@@ -29,6 +29,7 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertIn("src\\codebuddy\\aid_mart.py", setup_script.read_text(encoding="utf-8"))
         self.assertIn("authenticate_broker", aid_mart_auth.read_text(encoding="utf-8"))
         self.assertIn('PYTHONPATH=%BUDDY_HOME%src', runner.read_text(encoding="utf-8"))
+        self.assertIn("Python 3.12 or newer", runner.read_text(encoding="utf-8"))
         self.assertIn('--root "%CD%" chat', runner.read_text(encoding="utf-8"))
 
 

@@ -107,7 +107,6 @@ CONFIRM_VERBS = {
     "pipx",
     "npm",
     "python -m pip",
-    "py -m pip",
     "set-item",
     "set-itemproperty",
 }

@@ -6,8 +6,15 @@ set "TARGET=%TARGET_DIR%\buddy.cmd"
 
 if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>nul
+if errorlevel 1 (
+    echo Code Buddy requires Python 3.12 or newer.
+    echo Make sure the python command points to Python 3.12+.
+    exit /b 1
+)
+
 echo Installing Code Buddy Python package and terminal UI dependencies...
-py -3.12 -m pip install -e "%BUDDY_HOME%."
+python -m pip install -e "%BUDDY_HOME%."
 if errorlevel 1 (
     echo Failed to install Code Buddy dependencies.
     exit /b 1

@@ -28,7 +28,7 @@ class CommandBrokerTests(unittest.TestCase):
         self.assertEqual(self.broker.analyze("git status --short").risk, Risk.AUTO)
         self.assertEqual(self.broker.analyze("ruff format .").risk, Risk.CONFIRM)
         self.assertEqual(self.broker.analyze("python -m unittest discover").risk, Risk.AUTO)
-        self.assertEqual(self.broker.analyze("py -3.12 -m unittest discover -s tests").risk, Risk.AUTO)
+        self.assertEqual(self.broker.analyze("python -m unittest discover -s tests").risk, Risk.AUTO)
         self.assertEqual(self.broker.analyze("python -c \"open('x','w').write('bad')\"").risk, Risk.CONFIRM)
         self.assertEqual(self.broker.analyze("Set-ItemProperty HKCU:\\Software\\X Name Value").risk, Risk.CONFIRM)
         self.assertEqual(self.broker.analyze("npm install").risk, Risk.CONFIRM)

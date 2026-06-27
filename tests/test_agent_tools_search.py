@@ -150,7 +150,7 @@ def handle():
             self.command,
             GitManager(self.root),
             Searcher(self.policy),
-            ValidationHarness(self.root, self.command, ["py -3.12 -m unittest discover -s tests"]),
+            ValidationHarness(self.root, self.command, ["python -m unittest discover -s tests"]),
         )
 
         result = agent.handle("Change f to return 2")
