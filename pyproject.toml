@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codebuddy"
+version = "0.1.0"
+description = "Windows-first Python coding agent with safe editing and command brokers."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Code Buddy" }]
+dependencies = [
+    "prompt_toolkit>=3.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+ui = ["prompt_toolkit>=3.0", "rich>=13.0"]
+http = ["httpx>=0.27"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+codebuddy = "codebuddy.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[model.roles.main]
+provider = "perplexity"
+model = "sonar-pro"

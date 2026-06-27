@@ -1,0 +1,9 @@
+[
+  {
+    "name": "unquoted_tool_call_reads_missing_file",
+    "responses": [
+      "<tool_call>{name:\"read_text\", arguments:{path:\"tests/test_agent.py\"}}</tool_call>",
+      "Recovered after the missing file."
+    ]
+  }
+]
