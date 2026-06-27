@@ -21,11 +21,12 @@ from .errors import CodeBuddyError, ConfigError
 from .events import AgentEvent
 from .edit_broker import EditBroker
 from .git_manager import GitManager
-from .global_state import get_last_project_root, set_last_project_root
+from .global_state import get_last_project_root, get_project_binding, set_last_project_root, set_project_binding
 from .journal import Journal
 from .llm import FakeLLMClient, OpenAICompatibleClient
 from .paths import DEFAULT_SENSITIVE_PATTERNS, PathPolicy, resolve_project_root
 from .project_context import ProjectContext, bootstrap_project_memory
+from .project_scaffold import ensure_buddy_scaffold
 from .project_session import ProjectSession
 from .redaction import Redactor
 from .search import Searcher
@@ -72,12 +73,19 @@ def _main(argv: list[str] | None = None) -> int:
     prompt_args = [] if command else argv
 
     root = resolve_project_root(explicit_root)
+    launch_root = root
     interactive_work = (command == "chat" or bool(prompt_args)) and sys.stdin.isatty()
     has_fixed_root = bool(explicit_root or os.environ.get("CODEBUDDY_PROJECT_ROOT"))
     if interactive_work and not has_fixed_root:
-        root = prompt_project_root(root)
+        bound_root = get_project_binding(launch_root)
+        if bound_root and _project_is_configured(bound_root):
+            root = bound_root.resolve()
+        elif not _project_is_configured(root):
+            root = prompt_project_root(root)
+            set_project_binding(launch_root, root)
     if interactive_work:
         set_last_project_root(root)
+    ensure_buddy_scaffold(root)
     try:
         load_result = load_config(root)
     except ConfigError as exc:
@@ -209,6 +217,15 @@ def prompt_project_root(default_root: Path, picker=None) -> Path:
     return selected
 
 
+def _project_is_configured(root: Path) -> bool:
+    root = root.resolve()
+    return (
+        (root / ".pyagent" / "sessions" / "current.json").exists()
+        or (root / ".pyagent" / "config.toml").exists()
+        or (root / "BUDDY.md").exists()
+    )
+
+
 def open_native_folder_picker(initial_dir: Path) -> Path | None:
     try:
         import tkinter as tk
@@ -303,6 +320,7 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         Searcher(edit_broker.policy),
         ValidationHarness(root, command_broker, config.get("validation", {}).get("commands", [])),
         config.get("tools", {}),
+        max_tool_iterations=int(config.get("agent", {}).get("max_tool_iterations", 0)),
         model_timeout_seconds=float(config.get("model", {}).get("timeout_seconds", 75)),
     )
     result = agent.handle(prompt, event_sink=event_sink)

@@ -21,6 +21,12 @@ PATCH_BLOCK_RE = re.compile(
     r"<codebuddy_patch\s+path=(?P<quote>['\"])(?P<path>.*?)(?P=quote)\s*>\n?(?P<patch>.*?)\n?</codebuddy_patch>",
     re.DOTALL,
 )
+REWRITE_BLOCK_RE = re.compile(
+    r"<codebuddy_rewrite\s+path=(?P<quote>['\"])(?P<path>.*?)(?P=quote)"
+    r"(?:\s+expected_hash=(?P<hash_quote>['\"])(?P<expected_hash>.*?)(?P=hash_quote))?\s*>\n?"
+    r"(?P<content>.*?)\n?</codebuddy_rewrite>",
+    re.DOTALL,
+)
 MALFORMED_TOOL_CALL_NAME = "__malformed_tool_call__"
 
 
@@ -71,6 +77,15 @@ def parse_text_edit_blocks(text: str) -> list[ParsedToolCall]:
                 },
             )
         )
+    for match in REWRITE_BLOCK_RE.finditer(text):
+        arguments = {
+            "path": match.group("path"),
+            "content": _trim_block(match.group("content")),
+        }
+        expected_hash = match.group("expected_hash")
+        if expected_hash:
+            arguments["expected_hash"] = expected_hash
+        calls.append(ParsedToolCall("rewrite_file", arguments))
     return calls
 
 
@@ -116,6 +131,7 @@ def strip_tool_calls(text: str) -> str:
     text = TOOL_BLOCK_RE.sub("", text)
     text = REPLACE_BLOCK_RE.sub("", text)
     text = PATCH_BLOCK_RE.sub("", text)
+    text = REWRITE_BLOCK_RE.sub("", text)
     return text.strip()
 
 

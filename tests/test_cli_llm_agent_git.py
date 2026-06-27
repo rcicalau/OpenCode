@@ -195,6 +195,66 @@ class CliLlmAgentGitTests(unittest.TestCase):
         self.assertEqual(result, self.root.resolve())
         self.assertEqual(seen_initial, [self.root.resolve()])
 
+    def test_interactive_prompt_skips_folder_picker_for_configured_project(self) -> None:
+        import codebuddy.cli as cli_module
+
+        (self.root / "pyproject.toml").write_text("[project]\nname='configured'\n", encoding="utf-8")
+        SessionManager(self.root).load_or_create()
+        original_picker = cli_module.open_native_folder_picker
+        original_stdin = sys.stdin
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "configured project answer"
+        os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
+
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+        cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open"))
+        sys.stdin = TtyStdin()
+        try:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["What", "is", "here?"]), 0)
+        finally:
+            cli_module.open_native_folder_picker = original_picker
+            sys.stdin = original_stdin
+            os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
+            os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
+
+        self.assertIn("configured project answer", stdout.getvalue())
+        self.assertTrue((self.root / ".pyagent" / "sessions" / "current.json").exists())
+
+    def test_folder_picker_selection_is_remembered_for_launch_location(self) -> None:
+        import codebuddy.cli as cli_module
+
+        selected = Path(self.tmp.name) / "remembered-target"
+        original_picker = cli_module.open_native_folder_picker
+        original_stdin = sys.stdin
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "remembered project answer"
+        os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
+
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+        cli_module.open_native_folder_picker = lambda _initial: selected
+        sys.stdin = TtyStdin()
+        try:
+            with redirect_stdout(StringIO()):
+                self.assertEqual(main(["What", "is", "here?"]), 0)
+            cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open again"))
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["What", "is", "here?"]), 0)
+        finally:
+            cli_module.open_native_folder_picker = original_picker
+            sys.stdin = original_stdin
+            os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
+            os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
+
+        self.assertIn("remembered project answer", stdout.getvalue())
+        self.assertTrue((selected / ".pyagent" / "sessions" / "current.json").exists())
+
     def test_one_shot_prompt_uses_folder_picker_when_interactive_and_markerless(self) -> None:
         import codebuddy.cli as cli_module
 

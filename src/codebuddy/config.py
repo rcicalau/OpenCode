@@ -71,6 +71,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "commands": [],
         "targeted_first": True,
     },
+    "agent": {
+        "max_tool_iterations": 0,
+    },
     "git": {
         "agent_branch_required": True,
         "branch_prefix": "codebuddy/",
@@ -136,7 +139,7 @@ def load_config(project_root: Path, global_path: Path | None = None) -> ConfigLo
 
 
 def validate_config(config: dict[str, Any]) -> None:
-    required_sections = ["model", "workspace", "commands", "validation", "git", "storage", "tools"]
+    required_sections = ["model", "workspace", "commands", "validation", "agent", "git", "storage", "tools"]
     for section in required_sections:
         if section not in config or not isinstance(config[section], dict):
             raise ConfigError(f"missing or invalid config section: {section}")
@@ -149,6 +152,9 @@ def validate_config(config: dict[str, Any]) -> None:
     validations = config["validation"].get("commands")
     if not isinstance(validations, list) or not all(isinstance(item, str) for item in validations):
         raise ConfigError("validation.commands must be a list of strings")
+    max_tool_iterations = config["agent"].get("max_tool_iterations", 0)
+    if not isinstance(max_tool_iterations, int) or max_tool_iterations < 0:
+        raise ConfigError("agent.max_tool_iterations must be a non-negative integer")
 
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:

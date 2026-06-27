@@ -15,6 +15,7 @@ from codebuddy.agent import CodeBuddyAgent
 from codebuddy.command_broker import CommandBroker, CommandPolicy
 from codebuddy.edit_broker import EditBroker
 from codebuddy.git_manager import GitManager
+from codebuddy.hashutil import sha256_bytes
 from codebuddy.journal import Journal
 from codebuddy.llm import FakeLLMClient, LLMResponse
 from codebuddy.objective_state import APPROVAL_WAIT, BLOCKED, COMPLETE
@@ -99,6 +100,26 @@ def handle():
         self.assertEqual(calls[0].arguments["path"], "agent.py")
         self.assertIn('"""Return ok."""', calls[0].arguments["new"])
         self.assertEqual(strip_tool_calls(text), "")
+
+    def test_raw_rewrite_edit_block_avoids_json_escaping_for_whole_file_edits(self) -> None:
+        target = self.root / "agent.py"
+        target.write_text("def handle():\n    return 'old'\n", encoding="utf-8")
+        before_hash = sha256_bytes(target.read_bytes())
+        agent = self.make_agent(
+            [
+                f'''<codebuddy_rewrite path="agent.py" expected_hash="{before_hash}">
+def handle():
+    """Return the updated response."""
+    return 'new'
+</codebuddy_rewrite>''',
+                "Rewrote agent.py.",
+            ]
+        )
+
+        result = agent.handle("Rewrite agent.py with documentation")
+
+        self.assertIn("Rewrote agent.py", result.message)
+        self.assertIn('"""Return the updated response."""', target.read_text(encoding="utf-8"))
 
     def test_malformed_tool_call_raises_structured_error(self) -> None:
         with self.assertRaises(CodeBuddyError):
@@ -447,6 +468,43 @@ def handle():
         self.assertIn("Read it", result.message)
         self.assertFalse(any(event.title == "Tool" and event.status == "failed" for event in result.events))
         self.assertEqual([event.title for event in result.events], ["Context", "Read"])
+
+    def test_read_text_result_includes_hash_for_guarded_rewrites(self) -> None:
+        target = self.root / "README.md"
+        target.write_text("hash me\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                "Read it.",
+            ]
+        )
+
+        agent.handle("/ask Read README")
+        tool_result_prompt = agent.llm.calls[1][-1].content
+
+        self.assertIn("sha256:", tool_result_prompt)
+        self.assertIn(sha256_bytes(target.read_bytes()), tool_result_prompt)
+
+    def test_default_agent_loop_can_finish_after_more_than_six_tool_rounds(self) -> None:
+        (self.root / "README.md").write_text("long loop\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                "Finished after a longer inspection loop.",
+            ]
+        )
+
+        result = agent.handle("/ask Keep inspecting until done")
+
+        self.assertIn("Finished after a longer inspection loop.", result.message)
+        self.assertEqual([event.title for event in result.events].count("Read"), 7)
+        self.assertNotEqual(self.ledger.objective_state, BLOCKED)
 
     def test_dirty_worktree_blocks_execution_with_approval_instruction(self) -> None:
         subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

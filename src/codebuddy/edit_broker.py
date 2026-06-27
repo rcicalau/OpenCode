@@ -24,6 +24,15 @@ class EditResult:
     diff: str
 
 
+@dataclass(slots=True)
+class EditPreview:
+    path: Path
+    before_hash: str
+    after_hash: str
+    diff: str
+    would_change: bool
+
+
 class EditBroker:
     def __init__(self, policy: PathPolicy, journal: Journal | None = None, session_id: str = "manual") -> None:
         self.policy = policy
@@ -47,6 +56,28 @@ class EditBroker:
             raise EditConflict(f"exact block is not unique in {resolved}: {count} matches")
         updated = snapshot.text.replace(old2, new2, 1)
         return self._write_snapshot(snapshot, updated, "exact_replace")
+
+    def dry_run_exact_replace(self, path: str | Path, old: str, new: str, expected_hash: str | None = None) -> EditPreview:
+        resolved = self.policy.ensure_write_allowed(path)
+        snapshot = read_text_snapshot(resolved)
+        if expected_hash and sha256_bytes(snapshot.raw) != expected_hash:
+            raise EditConflict(f"file changed since it was read: {resolved}")
+        old2, new2 = self._normalize_candidate_newlines(snapshot, old, new)
+        count = snapshot.text.count(old2)
+        if count == 0:
+            raise EditConflict(f"exact block not found in {resolved}")
+        if count > 1:
+            raise EditConflict(f"exact block is not unique in {resolved}: {count} matches")
+        updated = snapshot.text.replace(old2, new2, 1)
+        before_hash = sha256_bytes(snapshot.raw)
+        after = encode_like(snapshot, updated)
+        return EditPreview(
+            resolved,
+            before_hash,
+            sha256_bytes(after),
+            _unified_diff(snapshot.raw.decode("utf-8", errors="replace"), updated, str(resolved)),
+            snapshot.raw != after,
+        )
 
     def create_file(self, path: str | Path, content: str, overwrite: bool = False, expected_hash: str | None = None) -> EditResult:
         resolved = self.policy.ensure_write_allowed(path)
@@ -85,6 +116,15 @@ class EditBroker:
         if self.journal:
             self.journal.record_file_change(self.session_id, "create_file" if not before else "rewrite_file", resolved, before, after, {"diff": diff})
         return EditResult(resolved, sha256_bytes(before), after_hash, diff)
+
+    def rewrite_file(self, path: str | Path, content: str, expected_hash: str | None = None) -> EditResult:
+        resolved = self.policy.ensure_write_allowed(path)
+        if not expected_hash:
+            raise EditConflict(f"rewrite requires expected_hash for existing file: {resolved}")
+        snapshot = read_text_snapshot(resolved)
+        if sha256_bytes(snapshot.raw) != expected_hash:
+            raise EditConflict(f"file changed since it was read: {resolved}")
+        return self._write_snapshot(snapshot, _normalize_text_newlines(content, snapshot.newline), "rewrite_file")
 
     def apply_unified_diff(self, path: str | Path, patch: str, expected_hash: str | None = None) -> EditResult:
         resolved = self.policy.ensure_write_allowed(path)
@@ -154,6 +194,13 @@ def _unified_diff(before: str, after: str, path: str) -> str:
             tofile=f"{path}:after",
         )
     )
+
+
+def _normalize_text_newlines(text: str, newline: str) -> str:
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    if newline == "\n":
+        return normalized
+    return normalized.replace("\n", newline)
 
 
 HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")

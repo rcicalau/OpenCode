@@ -14,8 +14,9 @@ from codebuddy.compaction import compact_ledger
 from codebuddy.config import load_config
 from codebuddy.errors import SessionRootMismatch
 from codebuddy.indexer import Indexer
-from codebuddy.paths import find_project_root, resolve_project_root
+from codebuddy.paths import PathPolicy, find_project_root, resolve_project_root
 from codebuddy.project_context import bootstrap_project_memory
+from codebuddy.project_scaffold import ensure_buddy_scaffold
 from codebuddy.project_session import ProjectSession
 from codebuddy.session import PlanItem, SessionManager
 
@@ -202,6 +203,32 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(saved_metadata["active_session_id"], ledger.session_id)
         self.assertEqual(saved_metadata["objective"], "Add invoice tests")
         self.assertIn("Project context", context.text)
+
+    def test_buddy_scaffold_is_created_without_overwriting_existing_instructions(self) -> None:
+        buddy = self.root / "BUDDY.md"
+        buddy.write_text("# Existing Buddy Rules\n\nKeep this.\n", encoding="utf-8")
+
+        ensure_buddy_scaffold(self.root)
+
+        self.assertEqual(buddy.read_text(encoding="utf-8"), "# Existing Buddy Rules\n\nKeep this.\n")
+        self.assertTrue((self.root / ".buddy" / "skills").is_dir())
+        self.assertTrue((self.root / ".buddy" / "templates").is_dir())
+        self.assertTrue((self.root / ".buddy" / "validators").is_dir())
+        self.assertTrue((self.root / ".buddy" / "tools").is_dir())
+
+    def test_project_context_includes_buddy_md_and_skills(self) -> None:
+        ensure_buddy_scaffold(self.root)
+        (self.root / "BUDDY.md").write_text("# Buddy Rules\n\nPrefer pytest.\n", encoding="utf-8")
+        skill = self.root / ".buddy" / "skills" / "docs.md"
+        skill.write_text("# Docs Skill\n\nUse tutorial docstrings.\n", encoding="utf-8")
+        ledger = SessionManager(self.root).load_or_create()
+
+        context = bootstrap_project_memory(self.root, ledger, PathPolicy(self.root), max_chars=20000)
+
+        self.assertIn("BUDDY.md", context.key_files)
+        self.assertIn("Prefer pytest.", context.text)
+        self.assertIn("Project skills:", context.text)
+        self.assertIn("Use tutorial docstrings.", context.text)
 
 
 if __name__ == "__main__":

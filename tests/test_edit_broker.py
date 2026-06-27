@@ -50,6 +50,18 @@ class EditBrokerTests(unittest.TestCase):
 
         self.assertEqual(path.read_text(encoding="utf-8"), "a\nb\na\n")
 
+    def test_dry_run_exact_replace_returns_diff_without_writing_or_journaling(self) -> None:
+        path = self.root / "sample.txt"
+        path.write_text("alpha\nbeta\n", encoding="utf-8")
+
+        preview = self.broker.dry_run_exact_replace("sample.txt", "beta", "BETA")
+
+        self.assertTrue(preview.would_change)
+        self.assertEqual(path.read_text(encoding="utf-8"), "alpha\nbeta\n")
+        self.assertIn("-beta", preview.diff)
+        self.assertIn("+BETA", preview.diff)
+        self.assertEqual(self.journal.entries(), [])
+
     def test_apply_unified_diff_rejects_context_drift(self) -> None:
         path = self.root / "sample.txt"
         path.write_text("one\ntwo\nthree\n", encoding="utf-8")
@@ -139,6 +151,22 @@ class EditBrokerTests(unittest.TestCase):
         self.broker.create_file("existing.txt", "new\n", overwrite=True, expected_hash=before_hash)
 
         self.assertEqual(path.read_text(encoding="utf-8"), "new\n")
+
+    def test_rewrite_file_requires_hash_rejects_noop_and_preserves_newline_style(self) -> None:
+        path = self.root / "existing.txt"
+        path.write_bytes(b"old\r\n")
+        before_hash = sha256_bytes(path.read_bytes())
+
+        with self.assertRaises(EditConflict):
+            self.broker.rewrite_file("existing.txt", "new\n")
+        with self.assertRaises(EditConflict):
+            self.broker.rewrite_file("existing.txt", "old\n", expected_hash=before_hash)
+
+        result = self.broker.rewrite_file("existing.txt", "new\n", expected_hash=before_hash)
+
+        self.assertEqual(path.read_bytes(), b"new\r\n")
+        self.assertNotEqual(result.before_hash, result.after_hash)
+        self.assertEqual([entry.action for entry in self.journal.entries()], ["edit_intent", "rewrite_file"])
 
     def test_pyagent_files_are_protected_from_edit_broker(self) -> None:
         target = self.root / ".pyagent" / "sessions" / "current.json"

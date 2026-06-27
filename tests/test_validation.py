@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,25 @@ class ValidationHarnessTests(unittest.TestCase):
         self.assertIn("validation command requires confirmation", result.failures[0])
         with self.assertRaises(DeniedByPolicy):
             ValidationHarness(self.root, self.broker, ["git reset --hard"]).validate()
+
+    def test_validation_fails_when_git_worktree_has_unexpected_changes(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        expected = self.root / "expected.py"
+        unexpected = self.root / "unexpected.py"
+        expected.write_text("value = 1\n", encoding="utf-8")
+        unexpected.write_text("value = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        expected.write_text("value = 2\n", encoding="utf-8")
+        unexpected.write_text("value = 2\n", encoding="utf-8")
+
+        result = ValidationHarness(self.root, self.broker).validate([expected], expected_files=[expected])
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.unexpected_files, ["unexpected.py"])
+        self.assertIn("unexpected files changed", result.failures[-1])
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ IGNORED_PARTS = {
 }
 
 KEY_FILES = [
+    "BUDDY.md",
     "README.md",
     "README.rst",
     "README.txt",
@@ -117,6 +118,7 @@ def build_project_context(project_root: Path, policy: PathPolicy, ledger: Sessio
     files = _list_project_files(root, policy)
     key_files = _select_key_files(files)
     snippets = _read_key_file_snippets(root, policy, key_files)
+    skills = _read_project_skills(root, policy)
     symbols = _python_symbols(root, policy, files)
     module_summaries = _module_summaries(files, symbols)
 
@@ -131,6 +133,8 @@ def build_project_context(project_root: Path, policy: PathPolicy, ledger: Sessio
     ]
     if snippets:
         sections.append("Key files:\n" + "\n\n".join(snippets))
+    if skills:
+        sections.append("Project skills:\n" + "\n\n".join(skills))
     if symbols:
         sections.append("Python symbols:\n" + "\n".join(symbols))
 
@@ -294,6 +298,24 @@ def _read_key_file_snippets(root: Path, policy: PathPolicy, key_files: list[str]
             continue
         if len(text) > max_chars_per_file:
             text = text[:max_chars_per_file].rstrip() + "\n...[truncated]..."
+        snippets.append(f"{rel}:\n{text}")
+    return snippets
+
+
+def _read_project_skills(root: Path, policy: PathPolicy, max_files: int = 8, max_chars_per_file: int = 1800) -> list[str]:
+    skills_dir = root / ".buddy" / "skills"
+    if not skills_dir.exists():
+        return []
+    snippets: list[str] = []
+    for path in sorted(skills_dir.glob("*.md"))[:max_files]:
+        try:
+            if policy.is_sensitive(path) or is_probably_binary_file(path):
+                continue
+            raw = read_limited_text_bytes(path, max_chars_per_file)
+            text = raw.decode("utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        rel = path.relative_to(root).as_posix()
         snippets.append(f"{rel}:\n{text}")
     return snippets
 

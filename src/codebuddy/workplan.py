@@ -41,6 +41,9 @@ class WorkPlan:
     created_at: str
     updated_at: str
     items: list[WorkItem] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
+    done_criteria: list[str] = field(default_factory=list)
+    validation_strategy: list[str] = field(default_factory=list)
 
     def pending_items(self) -> list[WorkItem]:
         return [item for item in self.items if item.status in {"pending", "in_progress"}]
@@ -71,6 +74,7 @@ class WorkPlanManager:
         self.policy = policy
         self.base_dir = self.project_root / ".pyagent" / "workplans"
         self.current_path = self.base_dir / "current.json"
+        self.active_plan_path = self.project_root / ".pyagent" / "plans" / "active.json"
 
     def load_current(self) -> WorkPlan | None:
         if not self.current_path.exists():
@@ -87,6 +91,11 @@ class WorkPlanManager:
         data = asdict(plan)
         self.current_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         (self.base_dir / f"{plan.id}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self.active_plan_path.parent.mkdir(parents=True, exist_ok=True)
+        active = dict(data)
+        active["progress"] = self.progress(plan)
+        active["summary"] = self.summary(plan)
+        self.active_plan_path.write_text(json.dumps(active, indent=2), encoding="utf-8")
 
     def active_or_new(self, objective: str) -> WorkPlan | None:
         existing = self.load_current()
@@ -133,6 +142,8 @@ class WorkPlanManager:
             return (
                 f"Objective: {plan.objective}\n"
                 f"Work item: document exactly one file: {item.target_path}\n"
+                f"Done criteria: {'; '.join(plan.done_criteria)}\n"
+                f"Validation strategy: {'; '.join(plan.validation_strategy)}\n"
                 "Read the file if needed, then improve only this file's documentation. "
                 "Prefer docstrings and useful comments; avoid noisy comments. "
                 "For edits, use a raw <codebuddy_replace path=\"...\"> block with <old> and <new> sections; "
@@ -143,6 +154,8 @@ class WorkPlanManager:
             return (
                 f"Objective: {plan.objective}\n"
                 f"Work item: create or improve a focused test suite for class {item.symbol} in {item.target_path}.\n"
+                f"Done criteria: {'; '.join(plan.done_criteria)}\n"
+                f"Validation strategy: {'; '.join(plan.validation_strategy)}\n"
                 "Read the class and nearby code first. Create or update a relevant test file under tests/. "
                 "Cover important behavior and edge cases visible from the code. Validate when done."
             )
@@ -157,7 +170,16 @@ class WorkPlanManager:
         next_text = next_item.label if next_item else "none"
         return f"{completed}/{total} completed, {pending} pending, {blocked} blocked. Next: {next_text}"
 
+    def progress(self, plan: WorkPlan) -> dict[str, int]:
+        return {
+            "total": len(plan.items),
+            "completed": plan.completed_count(),
+            "pending": len(plan.pending_items()),
+            "blocked": plan.blocked_count(),
+        }
+
     def _new_plan(self, objective: str, kind: str, items: list[WorkItem]) -> WorkPlan:
+        assumptions, done_criteria, validation_strategy = _contract_for_kind(kind)
         return WorkPlan(
             id=uuid.uuid4().hex[:12],
             session_id=self.session_id,
@@ -166,6 +188,9 @@ class WorkPlanManager:
             created_at=utc_now(),
             updated_at=utc_now(),
             items=items,
+            assumptions=assumptions,
+            done_criteria=done_criteria,
+            validation_strategy=validation_strategy,
         )
 
     def _code_files(self) -> list[str]:
@@ -224,6 +249,28 @@ def _looks_like_document_codebase(lowered: str) -> bool:
         any(phrase in lowered for phrase in ("document each file", "document every file", "document all files", "document the codebase"))
         or ("documentation" in lowered and "codebase" in lowered)
     )
+
+
+def _contract_for_kind(kind: str) -> tuple[list[str], list[str], list[str]]:
+    assumptions = [
+        "Work stays inside the selected project root.",
+        "Existing user changes are preserved unless the objective explicitly asks to modify them.",
+    ]
+    done_criteria = [
+        "All planned work items are completed or explicitly blocked with a reason.",
+        "No unexpected files are changed outside the planned scope.",
+    ]
+    validation_strategy = [
+        "Run syntax checks for touched Python files when present.",
+        "Run configured validation commands after each completed slice.",
+        "Record validation failures in the active plan before stopping.",
+    ]
+    if kind in {"document_codebase", "document_file"}:
+        done_criteria.append("Target files contain useful docstrings or comments without noisy restatement.")
+    if kind == "test_class":
+        done_criteria.append("A focused test file exists under tests/ or an existing relevant test file is improved.")
+        validation_strategy.append("Prefer the narrowest relevant test command before broader test runs.")
+    return assumptions, done_criteria, validation_strategy
 
 
 def _extract_class_name(objective: str) -> str | None:

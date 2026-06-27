@@ -11,6 +11,8 @@ class SetupArtifactsTests(unittest.TestCase):
         config_template = root / "examples" / "project_config.azure_openai.toml"
         setup_script = root / "scripts" / "setup-azure-openai.ps1"
         runner = root / "run-buddy.cmd"
+        installer = root / "install-buddy.cmd"
+        buddy_installer = root / "buddy-install.cmd"
         pyproject = root / "pyproject.toml"
         bundled_auth = root / "src" / "codebuddy" / "azure_auth.py"
         ai_mart_auth = root / "src" / "codebuddy" / "ai_mart.py"
@@ -19,6 +21,8 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertTrue(config_template.exists())
         self.assertTrue(setup_script.exists())
         self.assertTrue(runner.exists())
+        self.assertTrue(installer.exists())
+        self.assertTrue(buddy_installer.exists())
         self.assertTrue(bundled_auth.exists())
         self.assertTrue(ai_mart_auth.exists())
 
@@ -35,6 +39,8 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertIn("Python 3.12 or newer", runner.read_text(encoding="utf-8"))
         self.assertIn("-m codebuddy chat", runner.read_text(encoding="utf-8"))
         self.assertNotIn('--root "%CD%"', runner.read_text(encoding="utf-8"))
+        self.assertIn("install-buddy.cmd", buddy_installer.read_text(encoding="utf-8"))
+        self.assertIn('call "%BUDDY_HOME%buddy.cmd" %%*', installer.read_text(encoding="utf-8"))
         self.assertIn('\nbuddy = "codebuddy.cli:main"', pyproject.read_text(encoding="utf-8"))
 
 

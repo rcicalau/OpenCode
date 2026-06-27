@@ -7,6 +7,7 @@ from .command_broker import CommandBroker
 from .edit_broker import EditBroker
 from .errors import ConfirmationRequired, DeniedByPolicy
 from .events import AgentEvent
+from .hashutil import sha256_bytes
 from .search import Searcher
 from .session import SessionLedger
 from .tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall
@@ -46,6 +47,8 @@ class ToolRuntime:
                 results.append(self._edit_exact_replace(call, events))
             elif call.name == "create_file":
                 results.append(self._create_file(call, events))
+            elif call.name == "rewrite_file":
+                results.append(self._rewrite_file(call, events))
             elif call.name == "apply_unified_diff":
                 results.append(self._apply_unified_diff(call, events))
             elif call.name == "run_command":
@@ -68,11 +71,15 @@ class ToolRuntime:
         except Exception as exc:
             events.append(AgentEvent("read", "Read", f"{path}: {exc}", "failed"))
             return f"read_text {path} failed: {exc}"
+        try:
+            file_hash = sha256_bytes(self.edit_broker.read_text(path).raw)
+        except Exception:
+            file_hash = "unavailable"
         if path not in self.ledger.files_inspected:
             self.ledger.files_inspected.append(path)
         self.mark_plan("Gather context", "completed")
         events.append(AgentEvent("read", "Read", f"{path} ({len(content.splitlines())} lines)"))
-        return f"read_text {path}:\n{content}"
+        return f"read_text {path}:\nsha256: {file_hash}\ncontent:\n{content}"
 
     def _search(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
         if not self.searcher:
@@ -125,6 +132,24 @@ class ToolRuntime:
         events.append(AgentEvent("edit", "Create", f"{rel} ({_diff_stat(result.diff)})"))
         return f"created {rel}:\n{result.diff}"
 
+    def _rewrite_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+        path = str(call.arguments["path"])
+        try:
+            result = self.edit_broker.rewrite_file(
+                path,
+                str(call.arguments["content"]),
+                call.arguments.get("expected_hash"),
+            )
+        except Exception as exc:
+            events.append(AgentEvent("edit", "Rewrite", f"{path}: {exc}", "failed"))
+            return f"rewrite_file {path} failed: {exc}"
+        rel = result.path.relative_to(self.project_root).as_posix()
+        if rel not in self.ledger.files_edited:
+            self.ledger.files_edited.append(rel)
+        self.ledger.completed_actions.append(f"rewrote {rel}")
+        events.append(AgentEvent("edit", "Rewrite", f"{rel} ({_diff_stat(result.diff)})"))
+        return f"rewrote {rel}:\n{result.diff}"
+
     def _apply_unified_diff(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
         path = str(call.arguments["path"])
         try:
@@ -162,7 +187,8 @@ class ToolRuntime:
         if not self.validation:
             return "validate failed: validation harness unavailable"
         try:
-            validation = self.validation.validate([self.project_root / path for path in self.ledger.files_edited])
+            touched = [self.project_root / path for path in self.ledger.files_edited]
+            validation = self.validation.validate(touched, expected_files=touched)
         except Exception as exc:
             events.append(AgentEvent("validate", "Validate", str(exc), "failed"))
             return f"validation failed: {exc}"
@@ -190,6 +216,7 @@ class ToolRuntime:
             "search": "search",
             "edit_exact_replace": "edit",
             "create_file": "edit",
+            "rewrite_file": "edit",
             "apply_unified_diff": "edit",
             "run_command": "shell",
             "validate": "validate",

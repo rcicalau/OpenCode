@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,9 @@ class ValidationResult:
     command_results: list[CommandResult] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    touched_files: list[str] = field(default_factory=list)
+    unexpected_files: list[str] = field(default_factory=list)
+    tiers: list[str] = field(default_factory=list)
 
 
 class ValidationHarness:
@@ -22,9 +26,11 @@ class ValidationHarness:
         self.command_broker = command_broker
         self.commands = commands or []
 
-    def validate(self, touched_files: list[Path] | None = None) -> ValidationResult:
+    def validate(self, touched_files: list[Path] | None = None, expected_files: list[Path] | None = None) -> ValidationResult:
         result = ValidationResult(passed=True)
+        result.tiers.append("syntax")
         for path in touched_files or []:
+            result.touched_files.append(self._relative(path))
             if path.suffix == ".py" and path.exists():
                 try:
                     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -32,6 +38,15 @@ class ValidationHarness:
                 except SyntaxError as exc:
                     result.passed = False
                     result.failures.append(f"python syntax failed: {path}: {exc}")
+        if expected_files is not None:
+            result.tiers.append("worktree")
+            unexpected = self._unexpected_changed_files(expected_files)
+            if unexpected:
+                result.passed = False
+                result.unexpected_files = unexpected
+                result.failures.append(f"unexpected files changed: {', '.join(unexpected)}")
+        if self.commands:
+            result.tiers.append("commands")
         for command in self.commands:
             try:
                 command_result = self.command_broker.run(command, cwd=self.project_root)
@@ -44,3 +59,42 @@ class ValidationHarness:
                 result.passed = False
                 result.failures.append(f"command failed ({command_result.exit_code}): {command}")
         return result
+
+    def _unexpected_changed_files(self, expected_files: list[Path]) -> list[str]:
+        if not (self.project_root / ".git").exists():
+            return []
+        try:
+            completed = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                cwd=self.project_root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return []
+        if completed.returncode != 0:
+            return []
+        expected = {self._relative(path) for path in expected_files}
+        changed: set[str] = set()
+        for line in completed.stdout.splitlines():
+            if len(line) < 4:
+                continue
+            rel = line[3:].strip()
+            if " -> " in rel:
+                rel = rel.split(" -> ", 1)[1].strip()
+            rel = rel.replace("\\", "/")
+            if rel.startswith((".git/", ".pyagent/")):
+                continue
+            changed.add(rel)
+        return sorted(path for path in changed if path not in expected)
+
+    def _relative(self, path: Path) -> str:
+        resolved = path.resolve()
+        try:
+            return resolved.relative_to(self.project_root).as_posix()
+        except ValueError:
+            return resolved.as_posix()

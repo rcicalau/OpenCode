@@ -171,7 +171,7 @@ class CodeBuddyAgent:
         searcher: Searcher | None = None,
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
-        max_tool_iterations: int = 6,
+        max_tool_iterations: int | None = None,
         model_timeout_seconds: float = 75,
     ) -> None:
         self.project_root = project_root
@@ -183,7 +183,9 @@ class CodeBuddyAgent:
         self.searcher = searcher
         self.validation = validation
         self.enabled_tools = enabled_tools or {}
-        self.max_tool_iterations = max_tool_iterations
+        if max_tool_iterations is not None and max_tool_iterations < 0:
+            raise ValueError("max_tool_iterations must be non-negative or None")
+        self.max_tool_iterations = max_tool_iterations or None
         if model_timeout_seconds <= 0:
             raise ValueError("model_timeout_seconds must be positive")
         self.model_timeout_seconds = float(model_timeout_seconds)
@@ -260,6 +262,8 @@ class CodeBuddyAgent:
                 "For execution tasks, keep calling tools until the objective is complete or blocked. "
                 "For edits, do not use native JSON tool calls. Use raw edit blocks so multiline code cannot break JSON:\n"
                 "<codebuddy_replace path=\"relative/path.py\">\n<old>\nexact old text\n</old>\n<new>\nexact new text\n</new>\n</codebuddy_replace>\n"
+                "For guarded whole-file rewrites after reading a file, use:\n"
+                "<codebuddy_rewrite path=\"relative/path.py\" expected_hash=\"sha256-from-read\">\nfull replacement text\n</codebuddy_rewrite>\n"
                 "For non-edit tools, use native tools when available; otherwise use <tool_call>{\"name\":\"...\",\"arguments\":{}}</tool_call>.",
             ),
             Message("system", project_context),
@@ -267,9 +271,14 @@ class CodeBuddyAgent:
         ]
         message = ""
         tool_schemas = self._tool_schemas()
-        for iteration in range(self.max_tool_iterations):
+        iteration = 0
+        while self.max_tool_iterations is None or iteration < self.max_tool_iterations:
             if self._has_live_event_sink(events):
-                events.append(AgentEvent("model", "Model", f"request {iteration + 1}/{self.max_tool_iterations}", "running"))
+                label = f"request {iteration + 1}"
+                if self.max_tool_iterations is not None:
+                    label = f"{label}/{self.max_tool_iterations}"
+                events.append(AgentEvent("model", "Model", label, "running"))
+            iteration += 1
             try:
                 response = self._complete_model(messages, tool_schemas)
             except CodeBuddyError as exc:
@@ -417,7 +426,8 @@ class CodeBuddyAgent:
     def _validate_work_slice(self, events: list[AgentEvent]) -> bool:
         if not self.validation:
             return True
-        validation = self.validation.validate([self.project_root / path for path in self.ledger.files_edited])
+        touched = [self.project_root / path for path in self.ledger.files_edited]
+        validation = self.validation.validate(touched, expected_files=touched)
         self.ledger.validation_state = {"passed": validation.passed, "failures": validation.failures}
         self._mark_plan("Validate outcome", "completed" if validation.passed else "pending")
         detail = "passed" if validation.passed else f"failed ({len(validation.failures)} failures)"

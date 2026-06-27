@@ -37,3 +37,20 @@ def set_last_project_root(root: Path, home: Path | None = None) -> None:
     state["last_project_root"] = str(root.resolve())
     save_user_state(state, home)
 
+
+def get_project_binding(launch_root: Path, home: Path | None = None) -> Path | None:
+    bindings = load_user_state(home).get("project_bindings", {})
+    if not isinstance(bindings, dict):
+        return None
+    value = bindings.get(str(launch_root.resolve()))
+    return Path(value) if value else None
+
+
+def set_project_binding(launch_root: Path, project_root: Path, home: Path | None = None) -> None:
+    state = load_user_state(home)
+    bindings = state.setdefault("project_bindings", {})
+    if not isinstance(bindings, dict):
+        bindings = {}
+        state["project_bindings"] = bindings
+    bindings[str(launch_root.resolve())] = str(project_root.resolve())
+    save_user_state(state, home)

@@ -33,6 +33,19 @@ class WorkPlanTests(unittest.TestCase):
         saved = json.loads((self.root / ".pyagent" / "workplans" / "current.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["kind"], "document_codebase")
 
+    def test_workplan_persists_resumable_execution_contract(self) -> None:
+        plan = self.manager.active_or_new("Document each file in the codebase")
+
+        self.assertIsNotNone(plan)
+        active = self.root / ".pyagent" / "plans" / "active.json"
+        self.assertTrue(active.exists())
+        saved = json.loads(active.read_text(encoding="utf-8"))
+        self.assertEqual(saved["objective"], "Document each file in the codebase")
+        self.assertEqual(saved["progress"]["total"], 2)
+        self.assertIn("Work stays inside the selected project root.", saved["assumptions"])
+        self.assertIn("All planned work items are completed or explicitly blocked with a reason.", saved["done_criteria"])
+        self.assertTrue(any("validation" in item.lower() for item in saved["validation_strategy"]))
+
     def test_class_test_objective_finds_target_class(self) -> None:
         (self.root / "widget.py").write_text("class WidgetRunner:\n    pass\n", encoding="utf-8")
 
