@@ -38,6 +38,7 @@ and ``CodeBuddyAgent._run_model_loop``. They show the high-level control
 flow for each user prompt.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -58,6 +59,7 @@ from .tool_calls import (
     parse_text_tool_calls,
     strip_tool_calls,
 )
+from .tool_result import ToolResult
 from .tool_runtime import ToolRuntime
 from .validation import ValidationHarness
 from .workplan import WorkItem, WorkPlan, WorkPlanManager
@@ -172,6 +174,7 @@ class CodeBuddyAgent:
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
         max_tool_iterations: int | None = None,
+        no_progress_repeat_limit: int = 8,
         model_timeout_seconds: float = 75,
     ) -> None:
         self.project_root = project_root
@@ -186,6 +189,9 @@ class CodeBuddyAgent:
         if max_tool_iterations is not None and max_tool_iterations < 0:
             raise ValueError("max_tool_iterations must be non-negative or None")
         self.max_tool_iterations = max_tool_iterations or None
+        if no_progress_repeat_limit <= 0:
+            raise ValueError("no_progress_repeat_limit must be positive")
+        self.no_progress_repeat_limit = no_progress_repeat_limit
         if model_timeout_seconds <= 0:
             raise ValueError("model_timeout_seconds must be positive")
         self.model_timeout_seconds = float(model_timeout_seconds)
@@ -272,6 +278,8 @@ class CodeBuddyAgent:
         message = ""
         tool_schemas = self._tool_schemas()
         iteration = 0
+        repeated_signature: str | None = None
+        repeated_count = 0
         while self.max_tool_iterations is None or iteration < self.max_tool_iterations:
             if self._has_live_event_sink(events):
                 label = f"request {iteration + 1}"
@@ -302,7 +310,24 @@ class CodeBuddyAgent:
             if not calls:
                 message = visible_content
                 break
+            signature = _tool_call_signature(calls)
+            edited_before = set(self.ledger.files_edited)
             tool_results = self._run_tool_calls(calls, events)
+            edited_after = set(self.ledger.files_edited)
+            if signature == repeated_signature and edited_after == edited_before:
+                repeated_count += 1
+            else:
+                repeated_signature = signature
+                repeated_count = 1
+            if repeated_count > self.no_progress_repeat_limit:
+                self.ledger.objective_state = BLOCKED
+                message = (
+                    "Stopped for no progress because the model repeated the same tool call. "
+                    "Try a narrower prompt or inspect the latest tool result."
+                )
+                self.ledger.blockers.append("no progress: repeated identical tool call")
+                events.append(AgentEvent("tool", "Loop", "no progress: repeated identical tool call", "failed"))
+                break
             if self.ledger.pending_next_step == "approve command before execution":
                 self.ledger.objective_state = APPROVAL_WAIT
                 command = self.ledger.approvals.get("pending_command", "")
@@ -317,7 +342,8 @@ class CodeBuddyAgent:
                 Message(
                     "user",
                     "Tool results:\n"
-                    + "\n\n".join(tool_results)
+                    + "\n\n".join(result.to_prompt() for result in tool_results)
+                    + _recovery_playbook(tool_results)
                     + "\n\nContinue from these results. If the objective is complete, give the final answer. "
                     "If more work is needed, call the next tool.",
                 )
@@ -412,7 +438,7 @@ class CodeBuddyAgent:
         )
 
     def _run_text_tool_calls(self, text: str, events: list[AgentEvent]) -> list[str]:
-        return self._run_tool_calls(parse_text_tool_calls(text), events)
+        return [result.to_prompt() for result in self._run_tool_calls(parse_text_tool_calls(text), events)]
 
     def _collect_tool_calls(self, response) -> list[ParsedToolCall]:
         calls = list(response.tool_calls or [])
@@ -420,8 +446,8 @@ class CodeBuddyAgent:
         calls.extend(parse_text_tool_calls(response.content))
         return calls
 
-    def _run_tool_calls(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[str]:
-        return self.tool_runtime.run(calls, events)
+    def _run_tool_calls(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[ToolResult]:
+        return self.tool_runtime.run_structured(calls, events)
 
     def _validate_work_slice(self, events: list[AgentEvent]) -> bool:
         if not self.validation:
@@ -530,3 +556,41 @@ class _EventStream(list):
         super().append(event)
         if self.sink:
             self.sink(event)
+
+
+def _tool_call_signature(calls: list[ParsedToolCall]) -> str:
+    payload = [
+        {
+            "name": call.name,
+            "arguments": call.arguments,
+        }
+        for call in calls
+    ]
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _recovery_playbook(results: list[ToolResult]) -> str:
+    lines: list[str] = []
+    for result in results:
+        if result.ok or not result.retryable:
+            continue
+        path = result.metadata.get("path") if isinstance(result.metadata, dict) else None
+        if result.error_type == "stale_hash":
+            lines.append(
+                f"- {result.tool} failed with stale_hash for {path}. "
+                "Reread the file, copy the returned sha256, and retry with that value as expected_hash."
+            )
+        elif result.error_type == "file_not_found":
+            lines.append(
+                f"- {result.tool} could not find {path}. Search for the correct path before retrying."
+            )
+        elif result.error_type == "exact_block_not_found":
+            lines.append(
+                f"- {result.tool} could not find the expected block in {path}. "
+                "Reread the file and use a guarded rewrite or a larger exact block."
+            )
+        elif result.next_action:
+            lines.append(f"- {result.tool} failed with {result.error_type}. Next action: {result.next_action}.")
+    if not lines:
+        return ""
+    return "\n\nRecovery playbook:\n" + "\n".join(lines)

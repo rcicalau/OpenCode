@@ -73,6 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "agent": {
         "max_tool_iterations": 0,
+        "no_progress_repeat_limit": 8,
     },
     "git": {
         "agent_branch_required": True,
@@ -155,6 +156,9 @@ def validate_config(config: dict[str, Any]) -> None:
     max_tool_iterations = config["agent"].get("max_tool_iterations", 0)
     if not isinstance(max_tool_iterations, int) or max_tool_iterations < 0:
         raise ConfigError("agent.max_tool_iterations must be a non-negative integer")
+    no_progress_repeat_limit = config["agent"].get("no_progress_repeat_limit", 8)
+    if not isinstance(no_progress_repeat_limit, int) or no_progress_repeat_limit <= 0:
+        raise ConfigError("agent.no_progress_repeat_limit must be a positive integer")
 
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:

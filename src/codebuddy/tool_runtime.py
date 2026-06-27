@@ -11,6 +11,7 @@ from .hashutil import sha256_bytes
 from .search import Searcher
 from .session import SessionLedger
 from .tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall
+from .tool_result import ToolResult
 from .validation import ValidationHarness
 
 
@@ -36,13 +37,16 @@ class ToolRuntime:
         self.mark_plan = mark_plan or (lambda _step, _status: None)
 
     def run(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[str]:
-        results: list[str] = []
+        return [result.to_prompt() for result in self.run_structured(calls, events)]
+
+    def run_structured(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[ToolResult]:
+        results: list[ToolResult] = []
         for call in calls:
             self._ensure_tool_enabled(call.name)
             if call.name == "read_text":
                 results.append(self._read_text(call, events))
             elif call.name == "search":
-                results.append(self._search(call, events))
+                results.append(_coerce_tool_result("search", self._search(call, events)))
             elif call.name == "edit_exact_replace":
                 results.append(self._edit_exact_replace(call, events))
             elif call.name == "create_file":
@@ -52,25 +56,42 @@ class ToolRuntime:
             elif call.name == "apply_unified_diff":
                 results.append(self._apply_unified_diff(call, events))
             elif call.name == "run_command":
-                results.append(self._run_command(call, events))
+                results.append(_coerce_tool_result("run_command", self._run_command(call, events)))
             elif call.name == "validate":
-                results.append(self._validate(events))
+                results.append(_coerce_tool_result("validate", self._validate(events)))
             elif call.name == MALFORMED_TOOL_CALL_NAME:
-                results.append(self._malformed_tool_call(call, events))
+                results.append(_coerce_tool_result(MALFORMED_TOOL_CALL_NAME, self._malformed_tool_call(call, events)))
             else:
                 events.append(AgentEvent("tool", "Tool", call.name, "failed"))
-                results.append(f"unknown tool: {call.name}")
+                results.append(
+                    ToolResult(
+                        call.name,
+                        False,
+                        f"unknown tool: {call.name}",
+                        error_type="unknown_tool",
+                        retryable=False,
+                        next_action="stop_and_report_unknown_tool",
+                    )
+                )
         return results
 
-    def _read_text(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _read_text(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         if not self.searcher:
-            return "read_text failed: searcher unavailable"
+            return ToolResult("read_text", False, "read_text failed: searcher unavailable", error_type="tool_unavailable")
         path = str(call.arguments["path"])
         try:
             content = self.searcher.read_text(path)
         except Exception as exc:
             events.append(AgentEvent("read", "Read", f"{path}: {exc}", "failed"))
-            return f"read_text {path} failed: {exc}"
+            return ToolResult(
+                "read_text",
+                False,
+                f"read_text {path} failed: {exc}",
+                error_type=_classify_read_error(exc),
+                retryable=True,
+                next_action="search_for_correct_path",
+                metadata={"path": path},
+            )
         try:
             file_hash = sha256_bytes(self.edit_broker.read_text(path).raw)
         except Exception:
@@ -79,7 +100,12 @@ class ToolRuntime:
             self.ledger.files_inspected.append(path)
         self.mark_plan("Gather context", "completed")
         events.append(AgentEvent("read", "Read", f"{path} ({len(content.splitlines())} lines)"))
-        return f"read_text {path}:\nsha256: {file_hash}\ncontent:\n{content}"
+        return ToolResult(
+            "read_text",
+            True,
+            f"read_text {path}:\nsha256: {file_hash}\ncontent:\n{content}",
+            metadata={"path": path, "sha256": file_hash},
+        )
 
     def _search(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
         if not self.searcher:
@@ -94,7 +120,7 @@ class ToolRuntime:
         events.append(AgentEvent("search", "Search", f"{pattern!r} ({len(matches)} matches)"))
         return "search results:\n" + "\n".join(f"{m.path}:{m.line}:{m.text}" for m in matches)
 
-    def _edit_exact_replace(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _edit_exact_replace(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         path = str(call.arguments["path"])
         try:
             result = self.edit_broker.exact_replace(
@@ -105,15 +131,10 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Edit", f"{path}: {exc}", "failed"))
-            return f"edit_exact_replace {path} failed: {exc}"
-        rel = result.path.relative_to(self.project_root).as_posix()
-        if rel not in self.ledger.files_edited:
-            self.ledger.files_edited.append(rel)
-        self.ledger.completed_actions.append(f"edited {rel}")
-        events.append(AgentEvent("edit", "Edit", f"{rel} ({_diff_stat(result.diff)})"))
-        return f"edited {rel}:\n{result.diff}"
+            return _edit_failure("edit_exact_replace", path, exc)
+        return self._record_edit_result("edit_exact_replace", result, events, "Edit", "edited")
 
-    def _create_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _create_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         path = str(call.arguments["path"])
         try:
             result = self.edit_broker.create_file(
@@ -124,15 +145,10 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Create", f"{path}: {exc}", "failed"))
-            return f"create_file {path} failed: {exc}"
-        rel = result.path.relative_to(self.project_root).as_posix()
-        if rel not in self.ledger.files_edited:
-            self.ledger.files_edited.append(rel)
-        self.ledger.completed_actions.append(f"created {rel}")
-        events.append(AgentEvent("edit", "Create", f"{rel} ({_diff_stat(result.diff)})"))
-        return f"created {rel}:\n{result.diff}"
+            return _edit_failure("create_file", path, exc)
+        return self._record_edit_result("create_file", result, events, "Create", "created")
 
-    def _rewrite_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _rewrite_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         path = str(call.arguments["path"])
         try:
             result = self.edit_broker.rewrite_file(
@@ -142,15 +158,10 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Rewrite", f"{path}: {exc}", "failed"))
-            return f"rewrite_file {path} failed: {exc}"
-        rel = result.path.relative_to(self.project_root).as_posix()
-        if rel not in self.ledger.files_edited:
-            self.ledger.files_edited.append(rel)
-        self.ledger.completed_actions.append(f"rewrote {rel}")
-        events.append(AgentEvent("edit", "Rewrite", f"{rel} ({_diff_stat(result.diff)})"))
-        return f"rewrote {rel}:\n{result.diff}"
+            return _edit_failure("rewrite_file", path, exc)
+        return self._record_edit_result("rewrite_file", result, events, "Rewrite", "rewrote")
 
-    def _apply_unified_diff(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _apply_unified_diff(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         path = str(call.arguments["path"])
         try:
             result = self.edit_broker.apply_unified_diff(
@@ -160,13 +171,23 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Patch", f"{path}: {exc}", "failed"))
-            return f"apply_unified_diff {path} failed: {exc}"
+            return _edit_failure("apply_unified_diff", path, exc)
+        return self._record_edit_result("apply_unified_diff", result, events, "Patch", "patched")
+
+    def _record_edit_result(self, tool: str, result, events: list[AgentEvent], event_title: str, verb: str) -> ToolResult:
         rel = result.path.relative_to(self.project_root).as_posix()
         if rel not in self.ledger.files_edited:
             self.ledger.files_edited.append(rel)
-        self.ledger.completed_actions.append(f"patched {rel}")
-        events.append(AgentEvent("edit", "Patch", f"{rel} ({_diff_stat(result.diff)})"))
-        return f"patched {rel}:\n{result.diff}"
+        self.ledger.completed_actions.append(f"{verb} {rel}")
+        diff_stat = _diff_stat(result.diff)
+        events.append(AgentEvent("edit", event_title, f"{rel} ({diff_stat})"))
+        return ToolResult(
+            tool,
+            True,
+            f"{verb} {rel}:\n{result.diff}",
+            changed_files=[rel],
+            metadata={"path": rel, "before_hash": result.before_hash, "after_hash": result.after_hash, "diff_stat": diff_stat},
+        )
 
     def _run_command(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
         command = str(call.arguments["command"])
@@ -237,3 +258,63 @@ def _diff_stat(diff: str) -> str:
         elif line.startswith("-"):
             removed += 1
     return f"+{added}/-{removed}"
+
+
+def _classify_read_error(exc: Exception) -> str:
+    text = str(exc).lower()
+    if "no such file" in text or "cannot find" in text or "not found" in text:
+        return "file_not_found"
+    if "sensitive" in text:
+        return "sensitive_path"
+    if "outside" in text or "not under project root" in text:
+        return "outside_project"
+    if "binary" in text:
+        return "binary_file"
+    return "read_failed"
+
+
+def _edit_failure(tool: str, path: str, exc: Exception) -> ToolResult:
+    error_type, next_action = _classify_edit_error(exc)
+    return ToolResult(
+        tool,
+        False,
+        f"{tool} {path} failed: {exc}",
+        error_type=error_type,
+        retryable=error_type in {"stale_hash", "exact_block_not_found", "not_unique", "no_change"},
+        next_action=next_action,
+        metadata={"path": path},
+    )
+
+
+def _classify_edit_error(exc: Exception) -> tuple[str, str]:
+    text = str(exc).lower()
+    if "changed since it was read" in text:
+        return "stale_hash", "reread_file_then_retry"
+    if "exact block not found" in text or "patch context not found" in text:
+        return "exact_block_not_found", "reread_file_then_use_rewrite"
+    if "not unique" in text:
+        return "not_unique", "reread_file_then_use_larger_context"
+    if "produced no change" in text:
+        return "no_change", "verify_objective_or_stop"
+    if "binary file" in text:
+        return "binary_file", "stop_and_report_binary_file"
+    if "sensitive" in text:
+        return "sensitive_path", "stop_and_report_sensitive_path"
+    if "outside" in text or "not under project root" in text:
+        return "outside_project", "stop_and_report_outside_project"
+    return "edit_failed", "inspect_tool_error"
+
+
+def _coerce_tool_result(tool: str, value) -> ToolResult:
+    if isinstance(value, ToolResult):
+        return value
+    text = str(value)
+    failed = " failed:" in text or text.startswith(("unknown tool:", "malformed tool call arguments"))
+    return ToolResult(
+        tool,
+        not failed,
+        text,
+        error_type="tool_failed" if failed else None,
+        retryable=failed,
+        next_action="inspect_tool_error" if failed else None,
+    )

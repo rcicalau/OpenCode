@@ -247,6 +247,9 @@ def handle():
         self.assertIn("Recovered", result.message)
         self.assertTrue(any(event.title == "Read" and event.status == "failed" for event in result.events))
         self.assertIn("README.md", self.ledger.files_inspected)
+        replayed_prompt = "\n".join(message.content for message in agent.llm.calls[-1])
+        self.assertIn("Recovery playbook", replayed_prompt)
+        self.assertIn("Search for the correct path", replayed_prompt)
 
     def test_replays_bad_provider_tool_output_without_traceback(self) -> None:
         fixture = Path(__file__).resolve().parent / "fixtures" / "perplexity_bad_tool_outputs.json"
@@ -361,6 +364,25 @@ def handle():
         self.assertIn("Documented agent.py", result.message)
         self.assertIn('"""Return ok."""', (self.root / "agent.py").read_text(encoding="utf-8"))
         self.assertTrue(any(event.title == "Tool" and event.status == "failed" for event in result.events))
+
+    def test_stale_hash_edit_failure_adds_recovery_playbook_to_next_prompt(self) -> None:
+        (self.root / "agent.py").write_text("def handle():\n    return 'ok'\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '''<codebuddy_rewrite path="agent.py" expected_hash="stale">
+def handle():
+    return 'new'
+</codebuddy_rewrite>''',
+                "I will recover.",
+            ]
+        )
+
+        agent.handle("Rewrite agent.py")
+        recovery_prompt = agent.llm.calls[1][-1].content
+
+        self.assertIn("Recovery playbook", recovery_prompt)
+        self.assertIn("reread_file_then_retry", recovery_prompt)
+        self.assertIn("expected_hash", recovery_prompt)
 
     def test_agent_executes_raw_replace_edit_block_for_multiline_documentation(self) -> None:
         (self.root / "agent.py").write_text("def handle():\n    return 'ok'\n", encoding="utf-8")
@@ -505,6 +527,28 @@ def handle():
         self.assertIn("Finished after a longer inspection loop.", result.message)
         self.assertEqual([event.title for event in result.events].count("Read"), 7)
         self.assertNotEqual(self.ledger.objective_state, BLOCKED)
+
+    def test_agent_blocks_repeated_identical_tool_loop_without_waiting_for_model_budget(self) -> None:
+        (self.root / "README.md").write_text("stuck loop\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+                '<tool_call>{"name":"read_text","arguments":{"path":"README.md"}}</tool_call>',
+            ]
+        )
+
+        result = agent.handle("/ask Read README until you know what to do")
+
+        self.assertIn("no progress", result.message.lower())
+        self.assertEqual(self.ledger.objective_state, BLOCKED)
+        self.assertTrue(any(event.title == "Loop" and event.status == "failed" for event in result.events))
 
     def test_dirty_worktree_blocks_execution_with_approval_instruction(self) -> None:
         subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

@@ -36,7 +36,7 @@ class FakeLLMClient:
         self.tool_requests: list[list[dict[str, Any]]] = []
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]] | None = None) -> LLMResponse:
-        self.calls.append(messages)
+        self.calls.append([Message(message.role, message.content) for message in messages])
         self.tool_requests.append(list(tools or []))
         response = next(self._responses)
         if isinstance(response, LLMResponse):

@@ -321,6 +321,7 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         ValidationHarness(root, command_broker, config.get("validation", {}).get("commands", [])),
         config.get("tools", {}),
         max_tool_iterations=int(config.get("agent", {}).get("max_tool_iterations", 0)),
+        no_progress_repeat_limit=int(config.get("agent", {}).get("no_progress_repeat_limit", 8)),
         model_timeout_seconds=float(config.get("model", {}).get("timeout_seconds", 75)),
     )
     result = agent.handle(prompt, event_sink=event_sink)

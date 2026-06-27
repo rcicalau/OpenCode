@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codebuddy.llm import LLMResponse, collect_sse_response, iter_sse_content
+from codebuddy.llm import FakeLLMClient, LLMResponse, Message, collect_sse_response, iter_sse_content
 from codebuddy.errors import CodeBuddyError
 from codebuddy.tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall, parse_native_tool_calls
 
@@ -92,6 +92,17 @@ class LLMTests(unittest.TestCase):
         response = LLMResponse("", tool_calls=[ParsedToolCall("validate", {})])
 
         self.assertEqual(response.tool_calls[0].name, "validate")
+
+    def test_fake_llm_records_message_snapshots_per_call(self) -> None:
+        fake = FakeLLMClient(["one", "two"])
+        messages = [Message("user", "first")]
+
+        fake.complete(messages)
+        messages.append(Message("user", "second"))
+        fake.complete(messages)
+
+        self.assertEqual([message.content for message in fake.calls[0]], ["first"])
+        self.assertEqual([message.content for message in fake.calls[1]], ["first", "second"])
 
 
 if __name__ == "__main__":
