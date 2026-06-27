@@ -14,6 +14,22 @@ py -3.12 -m unittest discover -s tests
 
 The Windows `python` command may point at an older interpreter. Prefer the Python launcher command above.
 
+## Run Without Installing
+
+From any project folder, call the repo launcher directly:
+
+```cmd
+C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd
+```
+
+With no arguments, it starts chat bound to the current folder. With arguments, it runs a one-shot prompt:
+
+```cmd
+C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd "what does this project do?"
+```
+
+The launcher sets `PYTHONPATH` for this process only. It does not install Code Buddy globally and does not change your PATH. If `C:\Users\RaduC\Documents\OpenCode\.venv\Scripts\python.exe` exists, it uses that Python; otherwise it uses `py -3.12`.
+
 ## Install The Buddy Command
 
 Run this once from the Code Buddy repo:
