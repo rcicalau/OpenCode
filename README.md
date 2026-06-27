@@ -81,7 +81,7 @@ From the project you want Code Buddy to work on, run:
 powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot . -BaseUrl "https://your-endpoint/openai/v1"
 ```
 
-This creates `<project>\.pyagent\config.toml`, persists `AZURE_OPENAI_BASE_URL`, and points you at the bundled auth hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py` and replace `AzureAuthClient.get_token()` with your real workspace auth code.
+This creates `<project>\.pyagent\config.toml`, persists `AZURE_OPENAI_BASE_URL`, and points you at the bundled auth hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py` and provide the real `auth_client` object used by your workspace.
 
 You can also set the endpoint URL manually:
 
@@ -89,7 +89,7 @@ You can also set the endpoint URL manually:
 setx AZURE_OPENAI_BASE_URL "https://your-endpoint/openai/v1"
 ```
 
-Close and reopen `cmd.exe`. Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree, calls its `get_token()` method, and passes that token to the OpenAI Python SDK for every model request. The default provider config is:
+Close and reopen `cmd.exe`. Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree. That class imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token` for every model request. The default provider config is:
 
 ```toml
 [model.roles.main]
@@ -161,19 +161,21 @@ Each project gets its own `.pyagent` state, so opening Code Buddy in project A r
 
 ## Persistent API Keys
 
-API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses the bundled OpenCode auth hook:
+API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses the bundled AI Mark auth hook:
 
 ```text
-C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py
+C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py
 ```
 
 ```python
-class AzureAuthClient:
-    def get_token(self):
-        return "token-value"
+class AidMartAuthClient:
+    def authenticate_broker(self):
+        return broker_token_object
+
+auth_client = AidMartAuthClient()
 ```
 
-The token method may also return an object with a `.token` attribute.
+`broker_token_object` must expose `.access_token`.
 
 For dev/test with Perplexity, Code Buddy reads Perplexity from `PERPLEXITY_API_KEY`.
 

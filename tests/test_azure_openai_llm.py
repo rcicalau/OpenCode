@@ -161,12 +161,28 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "openai/gpt-5.4")
 
-    def test_bundled_default_auth_client_fails_with_setup_guidance(self) -> None:
+    def test_bundled_default_auth_client_uses_aid_mart_auth_client(self) -> None:
+        import codebuddy.azure_auth as azure_auth
+
+        original = azure_auth.auth_client
+
+        class FakeAidMartAuthClient:
+            def authenticate_broker(self):
+                return types.SimpleNamespace(access_token="aid-mart-token")
+
+        try:
+            azure_auth.auth_client = FakeAidMartAuthClient()
+            token = load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
+        finally:
+            azure_auth.auth_client = original
+
+        self.assertEqual(token.value, "aid-mart-token")
+
+    def test_bundled_default_auth_client_fails_with_aid_mart_setup_guidance(self) -> None:
         with self.assertRaises(ConfigError) as context:
             load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
 
-        self.assertIn("AzureAuthClient is not configured", str(context.exception))
-        self.assertIn("src\\codebuddy\\azure_auth.py", str(context.exception))
+        self.assertIn("codebuddy.aid_mart.auth_client is not configured", str(context.exception))
 
 
 if __name__ == "__main__":

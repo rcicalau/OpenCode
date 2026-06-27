@@ -9,7 +9,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $pyagentDir = Join-Path $resolvedProjectRoot ".pyagent"
 $configPath = Join-Path $pyagentDir "config.toml"
-$authPath = Join-Path $repoRoot "src\codebuddy\azure_auth.py"
+$authPath = Join-Path $repoRoot "src\codebuddy\aid_mart.py"
 
 New-Item -ItemType Directory -Force -Path $pyagentDir | Out-Null
 
@@ -20,8 +20,8 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     Write-Host "Kept existing $configPath"
 }
 
-Write-Host "Azure auth hook: $authPath"
-Write-Host "Edit AzureAuthClient.get_token() there with your workspace auth code."
+Write-Host "AI Mark auth client hook: $authPath"
+Write-Host "Edit auth_client there so authenticate_broker().access_token returns a token."
 
 if ($BaseUrl.Trim()) {
     setx AZURE_OPENAI_BASE_URL $BaseUrl | Out-Null

@@ -345,6 +345,7 @@ Default deployment provider:
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
 - Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
+- Default token bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token`
 
 Development/test provider:
 
@@ -1293,6 +1294,7 @@ Deployment default:
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
 - Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
+- Default token bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token`
 
 Development/test default:
 

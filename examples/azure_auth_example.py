@@ -1,26 +1,22 @@
-"""Example Azure auth bridge for Code Buddy.
+"""Example AI Mark auth client module for Code Buddy.
 
-Copy this file over the bundled Code Buddy auth hook:
+Copy this file over the bundled AI Mark auth placeholder:
 
-    C:\Users\RaduC\Documents\OpenCode\src\codebuddy\azure_auth.py
+    C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py
 
-Then replace the body of ``AzureAuthClient.get_token`` with your real Azure
-authentication code. Code Buddy loads this class with the default config value
-``auth_client = "codebuddy.azure_auth:AzureAuthClient"``.
+Then replace ``auth_client`` with your real AI Mark auth client object.
+``codebuddy.azure_auth.AzureAuthClient.get_token()`` calls:
+
+    auth_client.authenticate_broker().access_token
 """
 
 
-class AzureAuthClient:
-    """Return a bearer token for the OpenAI-compatible endpoint.
+class AidMartAuthClient:
+    """Return broker auth results for the OpenAI-compatible endpoint."""
 
-    Code Buddy calls ``get_token()`` before each model request, so this method
-    may refresh tokens when needed. It can return either a plain string token
-    or an object with a ``token`` attribute.
-    """
+    def authenticate_broker(self):
+        """Return an object with an ``access_token`` attribute."""
+        raise NotImplementedError("Replace with your AI Mark Azure auth code.")
 
-    def get_token(self):
-        """Return the current Azure access token.
 
-        Replace this example with the auth code used in your workspace.
-        """
-        raise NotImplementedError("Replace with your Azure token acquisition code.")
+auth_client = AidMartAuthClient()
