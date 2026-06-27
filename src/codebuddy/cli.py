@@ -15,6 +15,7 @@ from .command_broker import CommandBroker, CommandPolicy
 from .compaction import compact_ledger
 from .config import load_config, redact_config
 from .config import project_config_path
+from .conversation import append_turn
 from .errors import CodeBuddyError, ConfigError
 from .events import AgentEvent
 from .edit_broker import EditBroker
@@ -309,7 +310,16 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         config.get("tools", {}),
         model_timeout_seconds=float(config.get("model", {}).get("timeout_seconds", 75)),
     )
-    return agent.handle(prompt, event_sink=event_sink)
+    result = agent.handle(prompt, event_sink=event_sink)
+    append_turn(
+        SessionManager(root).session_dir(ledger.session_id),
+        user=prompt,
+        assistant=result.message,
+        mode=result.mode,
+        events=result.events,
+        changed_files=result.changed_files,
+    )
+    return result
 
 
 def chat_loop(root: Path, ledger, config: dict, journal: Journal, startup_context: ProjectContext | None = None) -> int:

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .conversation import conversation_path, render_conversation_history
 from .session import SessionLedger
 
 
-def compact_ledger(ledger: SessionLedger, output_path: Path) -> str:
+def compact_ledger(ledger: SessionLedger, output_path: Path, history_path: Path | None = None) -> str:
     lines = [
         "# Compacted Session State",
         "",
@@ -32,8 +33,9 @@ def compact_ledger(ledger: SessionLedger, output_path: Path) -> str:
     lines.append("")
     lines.append("## Blockers")
     lines.extend(f"- {blocker}" for blocker in ledger.blockers) or lines.append("- none")
+    lines.append("")
+    lines.append(render_conversation_history(history_path or conversation_path(output_path.parent)))
     content = "\n".join(lines) + "\n"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(content, encoding="utf-8")
     return content
-

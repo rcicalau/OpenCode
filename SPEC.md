@@ -756,7 +756,7 @@ AGENTS.md
     <session-id>/
       ledger.json
       journal.jsonl
-      transcript.jsonl
+      conversation.jsonl
       compacted_state.md
       artifacts/
   index/
@@ -790,8 +790,10 @@ External telemetry:
 
 Local storage:
 
-- Full local transcript is stored by default.
+- Full local transcript is stored by default in `conversation.jsonl`.
 - Prompt and response storage supports resume, audit, compaction, and debugging.
+- `/compact` summarizes both `conversation.jsonl` and `ledger.json` into `compacted_state.md`.
+- Model context includes `compacted_state.md` when present, otherwise recent conversation turns.
 - Secrets must be redacted.
 - Config may allow reduced storage modes:
   - Full transcript.

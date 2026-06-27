@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .conversation import load_session_memory
 from .paths import PathPolicy
 from .session import SessionLedger, utc_now
 from .textfile import is_probably_binary_file, read_limited_text_bytes
@@ -123,6 +124,7 @@ def build_project_context(project_root: Path, policy: PathPolicy, ledger: Sessio
         "Project context",
         f"Root: {root}",
         _session_section(ledger),
+        _conversation_memory_section(root, ledger),
         _shape_section(files),
         _module_section(module_summaries),
         _tree_section(files),
@@ -166,6 +168,12 @@ def _session_section(ledger: SessionLedger | None) -> str:
     if ledger.blockers:
         lines.append("- Blockers: " + ", ".join(ledger.blockers[:10]))
     return "\n".join(lines)
+
+
+def _conversation_memory_section(root: Path, ledger: SessionLedger | None) -> str:
+    if ledger is None:
+        return ""
+    return load_session_memory(root / ".pyagent" / "sessions" / ledger.session_id)
 
 
 def _list_project_files(root: Path, policy: PathPolicy, max_files: int = 500) -> list[str]:

@@ -116,6 +116,17 @@ Code Buddy stores project-local state under the selected project root:
 <project>\.pyagent\logs\
 ```
 
+Each active session stores durable conversation history:
+
+```text
+<project>\.pyagent\sessions\<session-id>\conversation.jsonl
+<project>\.pyagent\sessions\<session-id>\ledger.json
+<project>\.pyagent\sessions\<session-id>\journal.jsonl
+<project>\.pyagent\sessions\<session-id>\compacted_state.md
+```
+
+`conversation.jsonl` records each turn's user prompt, assistant response, visible tool/model events, changed files, mode, and timestamp. `/compact` summarizes both the transcript and the ledger into `compacted_state.md`. Future model calls include the compacted memory when it exists, or recent conversation turns when it does not.
+
 On launch, Code Buddy refreshes a project map at:
 
 ```text
