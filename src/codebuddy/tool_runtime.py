@@ -150,6 +150,7 @@ class ToolRuntime:
         except ConfirmationRequired as exc:
             self.ledger.pending_next_step = "approve command before execution"
             self.ledger.approvals["pending_command"] = command
+            self.ledger.approvals["pending_command_cwd"] = str(self.project_root)
             events.append(AgentEvent("shell", "Shell", f"{command}: {exc}", "failed"))
             return f"command needs approval: {command}: {exc}"
         self.ledger.commands_run.append(command)

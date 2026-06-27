@@ -93,7 +93,11 @@ class SlashCommandHandler:
         if command in {"/approve-branch", "/approve-dirty-branch", "/approve", "/a"}:
             if self.ledger.pending_next_step == "approve command before execution":
                 return self._approve_pending_command()
-            return self._approve_dirty_branch()
+            if self.ledger.pending_next_step == "approve dirty branch before execution":
+                return self._approve_dirty_branch()
+            if command in {"/approve-branch", "/approve-dirty-branch"}:
+                return self._approve_dirty_branch()
+            return SlashResult(True, False, "no pending approval found")
         if command == "/diff":
             status = self.git_manager.status()
             if not status.is_repo:
@@ -135,11 +139,13 @@ class SlashCommandHandler:
 
     def _approve_pending_command(self) -> SlashResult:
         command = str(self.ledger.approvals.pop("pending_command", ""))
+        cwd_value = self.ledger.approvals.pop("pending_command_cwd", None)
         if not command:
             self.ledger.pending_next_step = None
             self.manager.save(self.ledger)
             return SlashResult(True, False, "no pending command approval found")
-        result = self.git_manager.command_broker.run(command, approve=True) if self.git_manager.command_broker else None
+        cwd = Path(str(cwd_value)).expanduser().resolve() if cwd_value else self.project_root
+        result = self.git_manager.command_broker.run(command, cwd=cwd, approve=True) if self.git_manager.command_broker else None
         self.ledger.pending_next_step = None
         if command not in self.ledger.commands_run:
             self.ledger.commands_run.append(command)

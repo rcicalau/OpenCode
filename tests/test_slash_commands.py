@@ -62,6 +62,7 @@ class SlashCommandTests(unittest.TestCase):
 
     def test_approve_branch_sets_one_shot_dirty_branch_approval(self) -> None:
         self.ledger.objective = "update docs"
+        self.ledger.pending_next_step = "approve dirty branch before execution"
 
         result = self.handler.handle("/a")
 
@@ -69,6 +70,12 @@ class SlashCommandTests(unittest.TestCase):
         self.assertTrue(self.ledger.approvals["dirty_branch"])
         self.assertIn("update docs", result.message)
         self.assertEqual(result.followup_prompt, "update docs")
+
+    def test_approve_without_pending_request_does_not_create_new_approval(self) -> None:
+        result = self.handler.handle("/a")
+
+        self.assertIn("no pending approval", result.message)
+        self.assertNotIn("dirty_branch", self.ledger.approvals)
 
     def test_pending_branch_approval_accepts_yes_shortcut(self) -> None:
         self.ledger.objective = "update docs"
@@ -90,6 +97,11 @@ class SlashCommandTests(unittest.TestCase):
         self.assertTrue((self.root / "approved.txt").exists())
         self.assertEqual(result.followup_prompt, "run writer")
         self.assertIsNone(self.ledger.pending_next_step)
+        self.assertNotIn("pending_command", self.ledger.approvals)
+
+        second = self.handler.handle("/a")
+
+        self.assertIn("no pending approval", second.message)
 
     def test_pending_command_approval_accepts_yes_shortcut(self) -> None:
         self.ledger.objective = "run writer"
@@ -102,6 +114,20 @@ class SlashCommandTests(unittest.TestCase):
         self.assertTrue((self.root / "approved-yes.txt").exists())
         self.assertEqual(result.followup_prompt, "run writer")
         self.assertIsNone(self.ledger.pending_next_step)
+
+    def test_pending_command_approval_runs_in_recorded_project_subdirectory(self) -> None:
+        subdir = self.root / "src"
+        subdir.mkdir()
+        self.ledger.pending_next_step = "approve command before execution"
+        self.ledger.approvals["pending_command"] = "Write-Output hi > approved.txt"
+        self.ledger.approvals["pending_command_cwd"] = str(subdir)
+
+        result = self.handler.handle("/a")
+
+        self.assertIn("approved command", result.message)
+        self.assertTrue((subdir / "approved.txt").exists())
+        self.assertFalse((self.root / "approved.txt").exists())
+        self.assertNotIn("pending_command_cwd", self.ledger.approvals)
 
     def test_status_includes_active_workplan(self) -> None:
         (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")

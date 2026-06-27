@@ -19,9 +19,9 @@ if errorlevel 1 (
 )
 
 if "%~1"=="" (
-    "%BUDDY_PYTHON%" -m codebuddy --root "%CD%" chat
+    "%BUDDY_PYTHON%" -m codebuddy chat
 ) else (
-    "%BUDDY_PYTHON%" -m codebuddy --root "%CD%" %*
+    "%BUDDY_PYTHON%" -m codebuddy %*
 )
 
 endlocal

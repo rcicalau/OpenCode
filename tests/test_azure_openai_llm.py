@@ -161,28 +161,86 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "openai/gpt-5.4")
 
-    def test_bundled_default_auth_client_uses_aid_mart_auth_client(self) -> None:
-        import codebuddy.azure_auth as azure_auth
+    def test_auth_check_loads_base_url_from_import(self) -> None:
+        import codebuddy.ai_mart as ai_mart
 
-        original = azure_auth.auth_client
+        (self.root / "auth.py").write_text(
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return 'project-token'\n",
+            encoding="utf-8",
+        )
+        original = ai_mart.base_url
+        captured = {}
+        try:
+            ai_mart.base_url = "https://aimark.example/openai/v1"
+            result = auth_check(
+                {
+                    "model": {
+                        "roles": {"main": {"model": "openai/gpt-5.4"}},
+                        "providers": {
+                            "azure_openai": {
+                                "base_url_import": "codebuddy.ai_mart:base_url",
+                                "auth_client": "auth:AzureAuthClient",
+                                "token_method": "get_token",
+                                "model": "openai/gpt-5.4",
+                            }
+                        },
+                    }
+                },
+                "azure_openai",
+                poster=lambda url, headers, payload, timeout: captured.update({"url": url})
+                or (200, "{}"),
+                project_root=self.root,
+            )
+        finally:
+            ai_mart.base_url = original
 
-        class FakeAidMartAuthClient:
+        self.assertTrue(result.persisted)
+        self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
+
+    def test_provider_config_loads_base_url_from_import(self) -> None:
+        import codebuddy.ai_mart as ai_mart
+
+        original = ai_mart.base_url
+        try:
+            ai_mart.base_url = "https://aimark.example/openai/v1"
+            client = AzureAuthOpenAIClient.from_provider_config(
+                {
+                    "base_url_import": "codebuddy.ai_mart:base_url",
+                    "auth_client": "codebuddy.azure_auth:AzureAuthClient",
+                    "token_method": "get_token",
+                    "model": "openai/gpt-5.4",
+                },
+                "openai/gpt-5.4",
+            )
+        finally:
+            ai_mart.base_url = original
+
+        self.assertEqual(client.base_url, "https://aimark.example/openai/v1")
+
+    def test_bundled_default_auth_client_uses_ai_mart_auth_client(self) -> None:
+        import codebuddy.ai_mart as ai_mart
+
+        original = ai_mart.auth_client
+
+        class FakeAiMartAuthClient:
             def authenticate_broker(self):
-                return types.SimpleNamespace(access_token="aid-mart-token")
+                return types.SimpleNamespace(access_token="ai-mart-token")
 
         try:
-            azure_auth.auth_client = FakeAidMartAuthClient()
+            ai_mart.auth_client = FakeAiMartAuthClient()
             token = load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
         finally:
-            azure_auth.auth_client = original
+            ai_mart.auth_client = original
 
-        self.assertEqual(token.value, "aid-mart-token")
+        self.assertEqual(token.value, "ai-mart-token")
 
-    def test_bundled_default_auth_client_fails_with_aid_mart_setup_guidance(self) -> None:
+    def test_bundled_default_auth_client_fails_with_ai_mart_setup_guidance(self) -> None:
         with self.assertRaises(ConfigError) as context:
             load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
 
-        self.assertIn("codebuddy.aid_mart.auth_client is not configured", str(context.exception))
+        self.assertIn("codebuddy.ai_mart.auth_client is not configured", str(context.exception))
 
 
 if __name__ == "__main__":

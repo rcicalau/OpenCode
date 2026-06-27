@@ -22,7 +22,7 @@ From any project folder, call the repo launcher directly:
 C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd
 ```
 
-With no arguments, it starts chat bound to the current folder. With arguments, it runs a one-shot prompt:
+With no arguments, it starts chat and opens the folder picker at the folder you launched it from. With arguments, it runs a one-shot prompt using the same launch-folder default:
 
 ```cmd
 C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd "what does this project do?"
@@ -46,7 +46,7 @@ Open a new `cmd.exe` window, then start Code Buddy from anywhere:
 buddy
 ```
 
-With no arguments, `buddy` starts chat mode, opens a native folder picker, remembers the last folder, and stores that project's state in:
+With no arguments, `buddy` starts chat mode, opens a native folder picker at the folder you launched it from, and stores that project's state in:
 
 ```text
 <project>\.pyagent\
@@ -78,18 +78,12 @@ scripts\setup-azure-openai.ps1
 From the project you want Code Buddy to work on, run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot . -BaseUrl "https://your-endpoint/openai/v1"
+powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot .
 ```
 
-This creates `<project>\.pyagent\config.toml`, persists `AZURE_OPENAI_BASE_URL`, and points you at the bundled auth hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py` and provide the real `auth_client` object used by your workspace.
+This creates `<project>\.pyagent\config.toml` and points you at the bundled AI Mark hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\ai_mart.py` and provide the real `auth_client` object and `base_url` used by your workspace.
 
-You can also set the endpoint URL manually:
-
-```cmd
-setx AZURE_OPENAI_BASE_URL "https://your-endpoint/openai/v1"
-```
-
-Close and reopen `cmd.exe`. Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree. That class imports `auth_client` from `codebuddy.aid_mart` and returns `auth_client.authenticate_broker().access_token` for every model request. The default provider config is:
+Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree. That class imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token` for every model request. The Azure provider imports the endpoint from `codebuddy.ai_mart:base_url`. The default provider config is:
 
 ```toml
 [model.roles.main]
@@ -97,7 +91,7 @@ provider = "azure_openai"
 model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
-base_url_env = "AZURE_OPENAI_BASE_URL"
+base_url_import = "codebuddy.ai_mart:base_url"
 auth_client = "codebuddy.azure_auth:AzureAuthClient"
 token_method = "get_token"
 verify_ssl = false
@@ -144,7 +138,7 @@ The index also writes deterministic module summaries:
 
 Large execution objectives such as "document each file in the codebase" are split into durable work-plan slices under `.pyagent\workplans`. Each slice is validated, recorded in status, and can be resumed with `continue` or retried with `retry blocked`.
 
-When you start it inside a git repo, or a folder with `.pyagent\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder becomes the project root. You can also bind it explicitly:
+When you start it inside a git repo, or a folder with `.pyagent\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder is the default project root and the folder picker starts there. You can also bind it explicitly:
 
 ```cmd
 buddy --root C:\path\to\project chat
@@ -164,18 +158,19 @@ Each project gets its own `.pyagent` state, so opening Code Buddy in project A r
 API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses the bundled AI Mark auth hook:
 
 ```text
-C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py
+C:\Users\RaduC\Documents\OpenCode\src\codebuddy\ai_mart.py
 ```
 
 ```python
-class AidMartAuthClient:
+class AiMartAuthClient:
     def authenticate_broker(self):
         return broker_token_object
 
-auth_client = AidMartAuthClient()
+auth_client = AiMartAuthClient()
+base_url = "https://your-endpoint/openai/v1"
 ```
 
-`broker_token_object` must expose `.access_token`.
+`broker_token_object` must expose `.access_token`. `base_url` must be the OpenAI-compatible endpoint.
 
 For dev/test with Perplexity, Code Buddy reads Perplexity from `PERPLEXITY_API_KEY`.
 

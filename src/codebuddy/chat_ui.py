@@ -68,7 +68,7 @@ def help_message() -> str:
         "  /diff          Show git diff.\n"
         "  /branch        Show current branch.\n"
         "  /commit MSG    Commit agent-edited files on the agent branch.\n"
-        "  /a, /approve  Approve pending branch creation and continue.\n"
+        "  /a, /approve  Approve pending action and continue.\n"
         "  /yolo          Toggle confirmation-skipping mode for confirm-level actions.\n"
         "  /exit          Quit."
     )

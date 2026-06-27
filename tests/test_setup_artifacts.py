@@ -11,26 +11,31 @@ class SetupArtifactsTests(unittest.TestCase):
         config_template = root / "examples" / "project_config.azure_openai.toml"
         setup_script = root / "scripts" / "setup-azure-openai.ps1"
         runner = root / "run-buddy.cmd"
+        pyproject = root / "pyproject.toml"
         bundled_auth = root / "src" / "codebuddy" / "azure_auth.py"
-        aid_mart_auth = root / "src" / "codebuddy" / "aid_mart.py"
+        ai_mart_auth = root / "src" / "codebuddy" / "ai_mart.py"
 
         self.assertTrue(auth_template.exists())
         self.assertTrue(config_template.exists())
         self.assertTrue(setup_script.exists())
         self.assertTrue(runner.exists())
         self.assertTrue(bundled_auth.exists())
-        self.assertTrue(aid_mart_auth.exists())
+        self.assertTrue(ai_mart_auth.exists())
 
         self.assertIn("auth_client", auth_template.read_text(encoding="utf-8"))
         self.assertIn("authenticate_broker", auth_template.read_text(encoding="utf-8"))
         self.assertIn('provider = "azure_openai"', config_template.read_text(encoding="utf-8"))
         self.assertIn('auth_client = "codebuddy.azure_auth:AzureAuthClient"', config_template.read_text(encoding="utf-8"))
-        self.assertIn("AZURE_OPENAI_BASE_URL", setup_script.read_text(encoding="utf-8"))
-        self.assertIn("src\\codebuddy\\aid_mart.py", setup_script.read_text(encoding="utf-8"))
-        self.assertIn("authenticate_broker", aid_mart_auth.read_text(encoding="utf-8"))
+        self.assertIn("base_url", auth_template.read_text(encoding="utf-8"))
+        self.assertIn("src\\codebuddy\\ai_mart.py", setup_script.read_text(encoding="utf-8"))
+        self.assertNotIn("AZURE_OPENAI_BASE_URL", setup_script.read_text(encoding="utf-8"))
+        self.assertIn("authenticate_broker", ai_mart_auth.read_text(encoding="utf-8"))
         self.assertIn('PYTHONPATH=%BUDDY_HOME%src', runner.read_text(encoding="utf-8"))
+        self.assertIn('CODEBUDDY_START_DIR=%CD%', runner.read_text(encoding="utf-8"))
         self.assertIn("Python 3.12 or newer", runner.read_text(encoding="utf-8"))
-        self.assertIn('--root "%CD%" chat', runner.read_text(encoding="utf-8"))
+        self.assertIn("-m codebuddy chat", runner.read_text(encoding="utf-8"))
+        self.assertNotIn('--root "%CD%"', runner.read_text(encoding="utf-8"))
+        self.assertIn('\nbuddy = "codebuddy.cli:main"', pyproject.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

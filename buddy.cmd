@@ -12,7 +12,7 @@ if errorlevel 1 (
 )
 
 if "%~1"=="" (
-    python -m codebuddy --pick-root chat
+    python -m codebuddy chat
 ) else (
     python -m codebuddy %*
 )

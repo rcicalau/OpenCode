@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import os
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +44,11 @@ class AzureAuthOpenAIClient:
         project_root: Path | None = None,
     ) -> "AzureAuthOpenAIClient":
         base_url = provider.get("base_url")
-        base_url_env = provider.get("base_url_env")
-        if not base_url and base_url_env:
-            base_url = os.environ.get(str(base_url_env))
+        base_url_import = provider.get("base_url_import")
+        if not base_url and base_url_import:
+            base_url = load_import_value(str(base_url_import), project_root)
         if not base_url:
-            raise ConfigError(f"missing provider base_url; set {base_url_env or 'base_url'}")
+            raise ConfigError(f"missing provider base_url; configure {base_url_import or 'base_url'}")
         timeout_seconds = provider.get("timeout_seconds", 75)
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
             raise ConfigError("provider timeout_seconds must be a positive number")
@@ -126,6 +125,18 @@ def load_auth_token(
     if not token_value:
         raise ConfigError(f"auth client {auth_client_path}.{token_method} returned an empty token")
     return AuthToken(str(token_value), auth_client)
+
+
+def load_import_value(import_path: str, project_root: Path | None = None) -> Any:
+    module_name, value_name = _split_import_path(import_path)
+    module_file = (project_root / f"{module_name}.py") if project_root and "." not in module_name else None
+    if module_file and module_file.exists():
+        module = _load_module_from_file(module_name, module_file)
+    else:
+        module = importlib.import_module(module_name)
+    if not hasattr(module, value_name):
+        raise ConfigError(f"import value not found: {import_path}")
+    return getattr(module, value_name)
 
 
 def _load_auth_client(auth_client_path: str, project_root: Path | None) -> Any:

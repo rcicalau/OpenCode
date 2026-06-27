@@ -10,6 +10,7 @@ from pathlib import Path
 from . import __version__
 from .agent import CodeBuddyAgent
 from .auth import auth_check, auth_set, auth_status
+from .azure_openai_llm import DEFAULT_TOKEN_METHOD, load_auth_token, load_import_value
 from .chat_ui import ChatRenderer, help_message, read_prompt, welcome_message
 from .command_broker import CommandBroker, CommandPolicy
 from .compaction import compact_ledger
@@ -59,7 +60,6 @@ def _main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    pick_root = _pop_flag(argv, "--pick-root")
     new_session = False
     if "--new" in argv:
         new_session = True
@@ -192,16 +192,11 @@ def _pop_option_value(argv: list[str], name: str) -> str | None:
     return value
 
 
-def _pop_flag(argv: list[str], name: str) -> bool:
-    if name not in argv:
-        return False
-    argv.remove(name)
-    return True
-
-
 def prompt_project_root(default_root: Path, picker=None) -> Path:
+    proposed = default_root.resolve()
     last = get_last_project_root()
-    proposed = last or default_root
+    if not proposed.exists() and last:
+        proposed = last.resolve()
     print("")
     print("Choose a project folder for Code Buddy in the folder picker.")
     print("All sessions, journals, indexes, and context for that project stay in <project>\\.pyagent.")
@@ -433,22 +428,41 @@ def doctor(root: Path, config: dict) -> int:
     provider_config = provider if isinstance(provider, dict) else {}
     key_env = provider_config.get("api_key_env")
     auth_client = provider_config.get("auth_client")
-    base_url = provider_config.get("base_url") or (
-        os.environ.get(str(provider_config.get("base_url_env"))) if provider_config.get("base_url_env") else None
-    )
+    base_url = _provider_base_url(provider_config, root)
     checks["provider"] = provider_name
     if key_env:
         checks["api_key"] = "set" if os.environ.get(str(key_env)) else f"missing {key_env}"
         auth_ready = checks["api_key"].startswith("set")
     elif auth_client:
         checks["auth"] = f"client {auth_client}"
-        auth_ready = True
+        try:
+            load_auth_token(
+                auth_client_path=str(auth_client),
+                token_method=str(provider_config.get("token_method", DEFAULT_TOKEN_METHOD)),
+                project_root=root,
+            )
+            auth_ready = True
+        except ConfigError as exc:
+            checks["auth_error"] = str(exc)
+            auth_ready = False
     else:
         checks["api_key"] = "missing api_key_env"
         auth_ready = False
-    checks["base_url"] = "set" if base_url else f"missing {provider_config.get('base_url_env') or 'base_url'}"
+    checks["base_url"] = "set" if base_url else f"missing {provider_config.get('base_url_import') or provider_config.get('base_url_env') or 'base_url'}"
     print(json.dumps(checks, indent=2))
     return 0 if checks["powershell"] and auth_ready and checks["base_url"].startswith("set") else 1
+
+
+def _provider_base_url(provider_config: dict, root: Path) -> str | None:
+    base_url = provider_config.get("base_url")
+    if not base_url and provider_config.get("base_url_import"):
+        try:
+            base_url = load_import_value(str(provider_config["base_url_import"]), root)
+        except ConfigError:
+            return None
+    if not base_url and provider_config.get("base_url_env"):
+        base_url = os.environ.get(str(provider_config["base_url_env"]))
+    return str(base_url) if base_url else None
 
 
 def auth_command(command: str, provider_name: str | None, config: dict, root: Path | None = None) -> int:

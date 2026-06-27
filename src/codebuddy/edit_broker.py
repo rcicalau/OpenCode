@@ -77,10 +77,14 @@ class EditBroker:
                 before_hash=sha256_bytes(before),
             )
         self._atomic_write(resolved, after)
+        reread = resolved.read_bytes()
+        after_hash = sha256_bytes(reread)
+        if after_hash != sha256_bytes(after):
+            raise FileSafetyError(f"post-write hash mismatch for {resolved}")
         diff = _unified_diff(before.decode("utf-8", errors="replace"), normalized, str(resolved))
         if self.journal:
             self.journal.record_file_change(self.session_id, "create_file" if not before else "rewrite_file", resolved, before, after, {"diff": diff})
-        return EditResult(resolved, sha256_bytes(before), sha256_bytes(after), diff)
+        return EditResult(resolved, sha256_bytes(before), after_hash, diff)
 
     def apply_unified_diff(self, path: str | Path, patch: str, expected_hash: str | None = None) -> EditResult:
         resolved = self.policy.ensure_write_allowed(path)

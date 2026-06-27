@@ -1,6 +1,5 @@
 param(
-    [string]$ProjectRoot = (Get-Location).Path,
-    [string]$BaseUrl = ""
+    [string]$ProjectRoot = (Get-Location).Path
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +8,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $resolvedProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $pyagentDir = Join-Path $resolvedProjectRoot ".pyagent"
 $configPath = Join-Path $pyagentDir "config.toml"
-$authPath = Join-Path $repoRoot "src\codebuddy\aid_mart.py"
+$authPath = Join-Path $repoRoot "src\codebuddy\ai_mart.py"
 
 New-Item -ItemType Directory -Force -Path $pyagentDir | Out-Null
 
@@ -21,19 +20,10 @@ if (-not (Test-Path -LiteralPath $configPath)) {
 }
 
 Write-Host "AI Mark auth client hook: $authPath"
-Write-Host "Edit auth_client there so authenticate_broker().access_token returns a token."
-
-if ($BaseUrl.Trim()) {
-    setx AZURE_OPENAI_BASE_URL $BaseUrl | Out-Null
-    $env:AZURE_OPENAI_BASE_URL = $BaseUrl
-    Write-Host "Saved AZURE_OPENAI_BASE_URL for future terminals and current process."
-} else {
-    Write-Host "AZURE_OPENAI_BASE_URL not changed. Pass -BaseUrl `"https://your-endpoint/openai/v1`" to set it."
-}
+Write-Host "Edit auth_client and base_url there. authenticate_broker().access_token must return a token."
 
 Write-Host ""
 Write-Host "Next:"
-Write-Host "  1. Open a new terminal if you used -BaseUrl."
-Write-Host "  2. Edit $authPath."
-Write-Host "  3. Run: buddy auth check azure_openai"
-Write-Host "  4. Run: buddy"
+Write-Host "  1. Edit $authPath."
+Write-Host "  2. Run: buddy auth check azure_openai"
+Write-Host "  3. Run: buddy"

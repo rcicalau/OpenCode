@@ -18,6 +18,7 @@ from codebuddy.command_broker import CommandBroker, CommandResult, Risk
 from codebuddy.edit_broker import EditBroker
 from codebuddy.errors import ConfirmationRequired
 from codebuddy.git_manager import GitManager
+from codebuddy.global_state import set_last_project_root
 from codebuddy.journal import Journal
 from codebuddy.llm import FakeLLMClient
 from codebuddy.paths import PathPolicy, resolve_project_root
@@ -179,6 +180,21 @@ class CliLlmAgentGitTests(unittest.TestCase):
         self.assertTrue(selected.exists())
         self.assertIn("folder picker", stdout.getvalue())
 
+    def test_prompt_project_root_initial_dir_is_launch_default_not_last_project(self) -> None:
+        last_project = Path(self.tmp.name) / "old-last-project"
+        last_project.mkdir()
+        set_last_project_root(last_project)
+        seen_initial = []
+
+        def picker(initial):
+            seen_initial.append(Path(initial).resolve())
+            return self.root
+
+        result = prompt_project_root(self.root, picker=picker)
+
+        self.assertEqual(result, self.root.resolve())
+        self.assertEqual(seen_initial, [self.root.resolve()])
+
     def test_one_shot_prompt_uses_folder_picker_when_interactive_and_markerless(self) -> None:
         import codebuddy.cli as cli_module
 
@@ -315,6 +331,30 @@ model = "sonar-pro"
         self.assertEqual(code, 0)
         self.assertIn('"provider": "perplexity"', stdout.getvalue())
         self.assertIn('"api_key": "set"', stdout.getvalue())
+        self.assertIn('"base_url": "set"', stdout.getvalue())
+
+    def test_doctor_checks_default_ai_mart_import_contract(self) -> None:
+        import codebuddy.ai_mart as ai_mart
+
+        class FakeAiMartAuthClient:
+            def authenticate_broker(self):
+                return type("Token", (), {"access_token": "azure-token"})()
+
+        original_auth = ai_mart.auth_client
+        original_base_url = ai_mart.base_url
+        ai_mart.auth_client = FakeAiMartAuthClient()
+        ai_mart.base_url = "https://aimark.example/openai/v1"
+        stdout = StringIO()
+        try:
+            with redirect_stdout(stdout):
+                code = main(["doctor"])
+        finally:
+            ai_mart.auth_client = original_auth
+            ai_mart.base_url = original_base_url
+
+        self.assertEqual(code, 0)
+        self.assertIn('"provider": "azure_openai"', stdout.getvalue())
+        self.assertIn('"auth": "client codebuddy.azure_auth:AzureAuthClient"', stdout.getvalue())
         self.assertIn('"base_url": "set"', stdout.getvalue())
 
     def test_auth_set_persists_provider_key_via_writer_without_project_config_secret(self) -> None:

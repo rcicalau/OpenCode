@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ConfigError
-from .azure_openai_llm import DEFAULT_TOKEN_METHOD, load_auth_token
+from .azure_openai_llm import DEFAULT_TOKEN_METHOD, load_auth_token, load_import_value
 
 
 SecretPrompt = Callable[[str], str]
@@ -113,7 +113,11 @@ def auth_check(
         ).value
     else:
         raise ConfigError(f"provider has no api_key_env or auth_client: {provider_name}")
-    base_url = provider.get("base_url") or (os.environ.get(str(provider.get("base_url_env"))) if provider.get("base_url_env") else None)
+    base_url = provider.get("base_url")
+    if not base_url and provider.get("base_url_import"):
+        base_url = load_import_value(str(provider["base_url_import"]), project_root)
+    if not base_url and provider.get("base_url_env"):
+        base_url = os.environ.get(str(provider["base_url_env"]))
     if not base_url:
         raise ConfigError(f"provider has no base_url: {provider_name}")
     endpoint_path = str(provider.get("endpoint_path", "/chat/completions"))

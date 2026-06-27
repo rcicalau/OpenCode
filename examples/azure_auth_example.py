@@ -2,9 +2,9 @@
 
 Copy this file over the bundled AI Mark auth placeholder:
 
-    C:\Users\RaduC\Documents\OpenCode\src\codebuddy\aid_mart.py
+    C:\Users\RaduC\Documents\OpenCode\src\codebuddy\ai_mart.py
 
-Then replace ``auth_client`` with your real AI Mark auth client object.
+Then replace ``auth_client`` and ``base_url`` with your real AI Mark values.
 ``codebuddy.azure_auth.AzureAuthClient.get_token()`` calls:
 
     auth_client.authenticate_broker().access_token
@@ -20,3 +20,4 @@ class AidMartAuthClient:
 
 
 auth_client = AidMartAuthClient()
+base_url = "https://your-endpoint/openai/v1"
