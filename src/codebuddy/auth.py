@@ -7,9 +7,11 @@ import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ConfigError
+from .azure_openai_llm import DEFAULT_TOKEN_METHOD, load_auth_token
 
 
 SecretPrompt = Callable[[str], str]
@@ -43,6 +45,18 @@ def provider_api_key_env(config: dict, provider_name: str) -> str:
 
 
 def auth_status(config: dict, provider_name: str) -> AuthResult:
+    provider = config.get("model", {}).get("providers", {}).get(provider_name)
+    if not isinstance(provider, dict):
+        raise ConfigError(f"unknown provider: {provider_name}")
+    env_var = provider.get("api_key_env")
+    if not env_var and provider.get("auth_client"):
+        auth_client = str(provider["auth_client"])
+        return AuthResult(
+            provider=provider_name,
+            env_var=auth_client,
+            persisted=False,
+            message=f"{provider_name}: auth client {auth_client} is configured",
+        )
     env_var = provider_api_key_env(config, provider_name)
     is_set = bool(normalize_api_key(os.environ.get(env_var, "")))
     return AuthResult(
@@ -73,14 +87,32 @@ def auth_set(
     )
 
 
-def auth_check(config: dict, provider_name: str, poster: AuthPoster | None = None, timeout_seconds: int = 30) -> AuthResult:
+def auth_check(
+    config: dict,
+    provider_name: str,
+    poster: AuthPoster | None = None,
+    timeout_seconds: int = 30,
+    project_root: Path | None = None,
+) -> AuthResult:
     provider = config.get("model", {}).get("providers", {}).get(provider_name)
     if not isinstance(provider, dict):
         raise ConfigError(f"unknown provider: {provider_name}")
-    env_var = provider_api_key_env(config, provider_name)
-    api_key = normalize_api_key(os.environ.get(env_var, ""))
-    if not api_key:
-        raise ConfigError(f"{env_var} is missing in this process")
+    env_var = provider.get("api_key_env")
+    auth_client = provider.get("auth_client")
+    if env_var:
+        credential_label = str(env_var)
+        api_key = normalize_api_key(os.environ.get(str(env_var), ""))
+        if not api_key:
+            raise ConfigError(f"{env_var} is missing in this process")
+    elif auth_client:
+        credential_label = str(auth_client)
+        api_key = load_auth_token(
+            auth_client_path=str(auth_client),
+            token_method=str(provider.get("token_method", DEFAULT_TOKEN_METHOD)),
+            project_root=project_root,
+        ).value
+    else:
+        raise ConfigError(f"provider has no api_key_env or auth_client: {provider_name}")
     base_url = provider.get("base_url") or (os.environ.get(str(provider.get("base_url_env"))) if provider.get("base_url_env") else None)
     if not base_url:
         raise ConfigError(f"provider has no base_url: {provider_name}")
@@ -94,12 +126,12 @@ def auth_check(config: dict, provider_name: str, poster: AuthPoster | None = Non
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     status, _body = (poster or _default_auth_post)(str(base_url).rstrip("/") + endpoint_path, headers, payload, timeout_seconds)
     if 200 <= status < 300:
-        message = f"{provider_name}: live auth check passed using {env_var}"
+        message = f"{provider_name}: live auth check passed using {credential_label}"
     elif status == 401:
-        message = f"{provider_name}: {env_var} is set, but the provider rejected it with 401 invalid API key"
+        message = f"{provider_name}: {credential_label} is set, but the provider rejected it with 401 invalid API key"
     else:
-        message = f"{provider_name}: {env_var} is set, but provider check returned HTTP {status}"
-    return AuthResult(provider_name, env_var, 200 <= status < 300, message)
+        message = f"{provider_name}: {credential_label} is set, but provider check returned HTTP {status}"
+    return AuthResult(provider_name, credential_label, 200 <= status < 300, message)
 
 
 def _default_auth_post(url: str, headers: dict[str, str], payload: dict[str, Any], timeout_seconds: int) -> tuple[int, str]:

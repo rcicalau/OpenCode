@@ -48,12 +48,16 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(loaded.config["commands"]["default_timeout_seconds"], 9)
         self.assertEqual(loaded.sources, [global_config, project_config])
 
-    def test_openai_gpt54_is_deployment_default(self) -> None:
+    def test_azure_auth_openai_gpt54_is_deployment_default(self) -> None:
         loaded = load_config(self.root)
 
-        self.assertEqual(loaded.config["model"]["roles"]["main"]["provider"], "openai")
-        self.assertEqual(loaded.config["model"]["roles"]["main"]["model"], "gpt-5.4")
-        self.assertEqual(loaded.config["model"]["providers"]["openai"]["api_key_env"], "OPENAI_API_KEY")
+        self.assertEqual(loaded.config["model"]["roles"]["main"]["provider"], "azure_openai")
+        self.assertEqual(loaded.config["model"]["roles"]["main"]["model"], "openai/gpt-5.4")
+        provider = loaded.config["model"]["providers"]["azure_openai"]
+        self.assertEqual(provider["base_url_env"], "AZURE_OPENAI_BASE_URL")
+        self.assertEqual(provider["auth_client"], "auth:AzureAuthClient")
+        self.assertEqual(provider["token_method"], "get_token")
+        self.assertFalse(provider["verify_ssl"])
 
     def test_perplexity_provider_default_uses_base_url_and_endpoint_path(self) -> None:
         loaded = load_config(self.root)

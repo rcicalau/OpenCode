@@ -10,3 +10,8 @@ dist/
 *.egg-info/
 .venv/
 .pyagent/
+.pyagent/sessions/
+.pyagent/index/
+.pyagent/cache/
+.pyagent/logs/
+.pyagent/workplans/

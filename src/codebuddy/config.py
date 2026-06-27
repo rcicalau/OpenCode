@@ -15,17 +15,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "timeout_seconds": 75,
         "roles": {
             "main": {
-                "provider": "openai",
-                "model": "gpt-5.4",
+                "provider": "azure_openai",
+                "model": "openai/gpt-5.4",
                 "temperature": 0.2,
             },
             "compactor": {
-                "provider": "openai",
-                "model": "gpt-5.4",
+                "provider": "azure_openai",
+                "model": "openai/gpt-5.4",
                 "temperature": 0.0,
             },
         },
         "providers": {
+            "azure_openai": {
+                "base_url_env": "AZURE_OPENAI_BASE_URL",
+                "auth_client": "auth:AzureAuthClient",
+                "token_method": "get_token",
+                "model": "openai/gpt-5.4",
+                "verify_ssl": False,
+            },
             "openai": {
                 "base_url": "https://api.openai.com/v1",
                 "endpoint_path": "/chat/completions",

@@ -49,15 +49,29 @@ Interactive chat uses a colorized terminal UI:
 - Slash commands autocomplete while typing `/`.
 - Agent actions such as git branch creation, file edits, shell commands, searches, and validation are shown inline before the final answer.
 
-Production deployment is configured for OpenAI `gpt-5.4` by default, using `OPENAI_API_KEY`.
+Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default, using model `openai/gpt-5.4`.
 
-For development and provider smoke testing, use a persistent Windows user environment variable:
+Set the endpoint URL as a persistent Windows user environment variable:
 
 ```cmd
-setx PERPLEXITY_API_KEY "pplx-your-key-here"
+setx AZURE_OPENAI_BASE_URL "https://your-endpoint/openai/v1"
 ```
 
-Close and reopen `cmd.exe`, then configure the main provider as `perplexity` in `<project>\.pyagent\config.toml` when you want dev/test traffic to use Perplexity.
+Close and reopen `cmd.exe`. Code Buddy then loads `auth:AzureAuthClient` from the selected project root, calls its `get_token()` method, and passes that token to the OpenAI Python SDK for every model request. The default provider config is:
+
+```toml
+[model.roles.main]
+provider = "azure_openai"
+model = "openai/gpt-5.4"
+
+[model.providers.azure_openai]
+base_url_env = "AZURE_OPENAI_BASE_URL"
+auth_client = "auth:AzureAuthClient"
+token_method = "get_token"
+verify_ssl = false
+```
+
+For development and provider smoke testing with Perplexity, set `PERPLEXITY_API_KEY` and configure the main provider as `perplexity` in `<project>\.pyagent\config.toml`.
 
 ## Project Binding
 
@@ -104,7 +118,17 @@ Each project gets its own `.pyagent` state, so opening Code Buddy in project A r
 
 ## Persistent API Keys
 
-API keys are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. For dev/test, Code Buddy reads Perplexity from `PERPLEXITY_API_KEY`.
+API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses your project-local `auth.py` file:
+
+```python
+class AzureAuthClient:
+    def get_token(self):
+        return "token-value"
+```
+
+The token method may also return an object with a `.token` attribute.
+
+For dev/test with Perplexity, Code Buddy reads Perplexity from `PERPLEXITY_API_KEY`.
 
 ```cmd
 setx PERPLEXITY_API_KEY "pplx-your-key-here"

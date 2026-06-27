@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import copy
 from pathlib import Path
 
 from . import __version__
@@ -98,7 +99,7 @@ def _main(argv: list[str] | None = None) -> int:
     if command == "config":
         return config_command(config_subcommand, root, config, load_result.sources)
     if command == "auth":
-        return auth_command(auth_subcommand, auth_provider, config)
+        return auth_command(auth_subcommand, auth_provider, config, root)
     if command == "status":
         git_config = config.get("git", {})
         git_manager = GitManager(
@@ -247,7 +248,7 @@ def maybe_configure_project_provider(root: Path, config: dict) -> None:
     if target.exists():
         return
     providers = config.get("model", {}).get("providers", {})
-    default = "perplexity" if os.environ.get("PERPLEXITY_API_KEY") and not os.environ.get("OPENAI_API_KEY") else "openai"
+    default = "azure_openai"
     print("")
     print("No project config found.")
     print("Choose the LLM provider for this project.")
@@ -256,7 +257,7 @@ def maybe_configure_project_provider(root: Path, config: dict) -> None:
     if answer not in providers:
         print(f"Unknown provider '{answer}', keeping default config.")
         return
-    model = providers.get(answer, {}).get("model") or ("gpt-5.4" if answer == "openai" else "sonar-pro")
+    model = providers.get(answer, {}).get("model") or ("openai/gpt-5.4" if answer == "azure_openai" else "gpt-5.4" if answer == "openai" else "sonar-pro")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         f"[model.roles.main]\nprovider = \"{answer}\"\nmodel = \"{model}\"\n",
@@ -267,7 +268,7 @@ def maybe_configure_project_provider(root: Path, config: dict) -> None:
 
 def maybe_prompt_for_auth(config: dict) -> None:
     role = config.get("model", {}).get("roles", {}).get("main", {})
-    provider_name = str(role.get("provider", "openai"))
+    provider_name = str(role.get("provider", "azure_openai"))
     provider = config.get("model", {}).get("providers", {}).get(provider_name, {})
     if not isinstance(provider, dict):
         return
@@ -286,7 +287,9 @@ def maybe_prompt_for_auth(config: dict) -> None:
 
 def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, yolo_enabled: bool | None = None, event_sink=None):
     edit_broker, command_broker = build_brokers(root, ledger.session_id, config, journal, yolo_enabled)
-    llm = build_llm_client(config)
+    llm_config = copy.deepcopy(config)
+    llm_config["_runtime_project_root"] = str(root)
+    llm = build_llm_client(llm_config)
     git_config = config.get("git", {})
     agent = CodeBuddyAgent(
         root,
@@ -359,13 +362,22 @@ def build_llm_client(config: dict):
         return FakeLLMClient([fake_response])
     roles = config.get("model", {}).get("roles", {})
     main_role = roles.get("main", {})
-    provider_name = main_role.get("provider", "openai")
-    model = main_role.get("model", "gpt-5.4")
+    provider_name = main_role.get("provider", "azure_openai")
+    model = main_role.get("model", "openai/gpt-5.4")
     provider = config.get("model", {}).get("providers", {}).get(provider_name)
     if not isinstance(provider, dict):
         raise ConfigError(f"unknown provider: {provider_name}")
     provider = dict(provider)
     provider.setdefault("timeout_seconds", config.get("model", {}).get("timeout_seconds", 75))
+    if provider_name == "azure_openai":
+        from .azure_openai_llm import AzureAuthOpenAIClient
+
+        runtime_root = config.get("_runtime_project_root")
+        return AzureAuthOpenAIClient.from_provider_config(
+            provider,
+            model,
+            project_root=Path(str(runtime_root)) if runtime_root else None,
+        )
     return OpenAICompatibleClient.from_provider_config(provider, model)
 
 
@@ -406,30 +418,39 @@ def doctor(root: Path, config: dict) -> int:
     }
     providers = config.get("model", {}).get("providers", {})
     role = config.get("model", {}).get("roles", {}).get("main", {})
-    provider_name = role.get("provider", "openai")
+    provider_name = role.get("provider", "azure_openai")
     provider = providers.get(provider_name, {})
     provider_config = provider if isinstance(provider, dict) else {}
     key_env = provider_config.get("api_key_env")
+    auth_client = provider_config.get("auth_client")
     base_url = provider_config.get("base_url") or (
         os.environ.get(str(provider_config.get("base_url_env"))) if provider_config.get("base_url_env") else None
     )
     checks["provider"] = provider_name
-    checks["api_key"] = "set" if key_env and os.environ.get(str(key_env)) else f"missing {key_env}"
+    if key_env:
+        checks["api_key"] = "set" if os.environ.get(str(key_env)) else f"missing {key_env}"
+        auth_ready = checks["api_key"].startswith("set")
+    elif auth_client:
+        checks["auth"] = f"client {auth_client}"
+        auth_ready = True
+    else:
+        checks["api_key"] = "missing api_key_env"
+        auth_ready = False
     checks["base_url"] = "set" if base_url else f"missing {provider_config.get('base_url_env') or 'base_url'}"
     print(json.dumps(checks, indent=2))
-    return 0 if checks["powershell"] and checks["api_key"].startswith("set") and checks["base_url"].startswith("set") else 1
+    return 0 if checks["powershell"] and auth_ready and checks["base_url"].startswith("set") else 1
 
 
-def auth_command(command: str, provider_name: str | None, config: dict) -> int:
+def auth_command(command: str, provider_name: str | None, config: dict, root: Path | None = None) -> int:
     role = config.get("model", {}).get("roles", {}).get("main", {})
-    provider = provider_name or str(role.get("provider", "openai"))
+    provider = provider_name or str(role.get("provider", "azure_openai"))
     try:
         if command == "status":
             result = auth_status(config, provider)
         elif command == "set":
             result = auth_set(config, provider)
         elif command == "check":
-            result = auth_check(config, provider)
+            result = auth_check(config, provider, project_root=root)
         else:
             print("usage: codebuddy auth [status|set|check] [provider]", file=sys.stderr)
             return 2

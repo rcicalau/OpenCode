@@ -6,7 +6,7 @@ Working name: Code Buddy
 
 ## 1. Summary
 
-Code Buddy is a Python-implemented, Windows-only, terminal-first coding agent inspired by tools like Claude Code, Codex, and OpenCode. It uses an API-hosted LLM, with OpenAI `gpt-5.4` as the deployment provider/model and Perplexity as the development/test provider, and operates inside a local project workspace.
+Code Buddy is a Python-implemented, Windows-only, terminal-first coding agent inspired by tools like Claude Code, Codex, and OpenCode. It uses an API-hosted LLM, with an Azure-authenticated OpenAI-compatible `openai/gpt-5.4` deployment provider/model and Perplexity as the development/test provider, and operates inside a local project workspace.
 
 "Python-only" means Code Buddy itself is implemented in Python and does not require Node.js. It may inspect and edit any text-based project on a best-effort basis, while Python projects receive first-class support.
 
@@ -35,7 +35,7 @@ The most important v1 quality bar is reliable, non-destructive editing. All muta
 - Installable and runnable through a documented Windows-first onboarding path.
 - Terminal-first CLI/TUI.
 - Multiline input, bracketed paste support, history, and `$EDITOR` fallback.
-- Provider-neutral LLM layer with deployment default `openai/gpt-5.4`.
+- Provider-neutral LLM layer with deployment default `azure_openai/openai/gpt-5.4`.
 - OpenAI-compatible API adapters for OpenAI and Perplexity.
 - Native tool/function-call support when available.
 - Structured text tool-call fallback when native tool calls are unavailable.
@@ -341,9 +341,10 @@ The LLM layer must be provider-neutral.
 
 Default deployment provider:
 
-- Provider: `openai`
-- Model: `gpt-5.4`
+- Provider: `azure_openai`
+- Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
+- Auth style: project-loadable `auth:AzureAuthClient` token provider
 
 Development/test provider:
 
@@ -370,7 +371,7 @@ Required model roles:
 - Compactor.
 - Reviewer/validator.
 
-All deployment roles may default to `openai/gpt-5.4` in v1. Development and test roles may be pointed at Perplexity. The role abstraction should exist even if only one model is configured.
+All deployment roles may default to `azure_openai/openai/gpt-5.4` in v1. Development and test roles may be pointed at Perplexity. The role abstraction should exist even if only one model is configured.
 
 ## 15. Tool Registry
 
@@ -919,18 +920,20 @@ Example config shape:
 
 ```toml
 [model.roles.main]
-provider = "openai"
-model = "gpt-5.4"
+provider = "azure_openai"
+model = "openai/gpt-5.4"
 temperature = 0.2
 
 [model.roles.compactor]
-provider = "openai"
-model = "gpt-5.4"
+provider = "azure_openai"
+model = "openai/gpt-5.4"
 
-[model.providers.openai]
-base_url = "https://api.openai.com/v1"
-endpoint_path = "/chat/completions"
-api_key_env = "OPENAI_API_KEY"
+[model.providers.azure_openai]
+base_url_env = "AZURE_OPENAI_BASE_URL"
+auth_client = "auth:AzureAuthClient"
+token_method = "get_token"
+model = "openai/gpt-5.4"
+verify_ssl = false
 
 [model.providers.perplexity]
 base_url = "https://api.perplexity.ai"
@@ -1284,9 +1287,10 @@ The default provider/model is a release-critical dependency.
 
 Deployment default:
 
-- Provider: `openai`
-- Model: `gpt-5.4`
+- Provider: `azure_openai`
+- Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
+- Auth style: project-loadable `auth:AzureAuthClient` token provider
 
 Development/test default:
 
@@ -1316,7 +1320,7 @@ Provider failure behavior:
 - Context limit exceeded: trigger compaction or reduce working set.
 - Tool calls unsupported: fall back to structured text tool calls.
 
-V1 may support other OpenAI-compatible providers later, but `openai/gpt-5.4` must be proven for deployment and Perplexity must be proven for development/test smoke runs before MVP release.
+V1 may support other OpenAI-compatible providers later, but `azure_openai/openai/gpt-5.4` must be proven for deployment and Perplexity must be proven for development/test smoke runs before MVP release.
 
 ## 42. Configuration UX
 
