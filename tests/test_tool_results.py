@@ -51,6 +51,28 @@ class ToolResultTests(unittest.TestCase):
         self.assertEqual(results[0].next_action, "search_for_correct_path")
         self.assertIn('"ok": false', results[0].to_prompt())
 
+    def test_missing_read_auto_recovers_when_filename_has_single_project_match(self) -> None:
+        (self.root / "README.md").write_text("auto recovered\n", encoding="utf-8")
+
+        results = self.runtime.run_structured([ParsedToolCall("read_text", {"path": "docs/README.md"})], [])
+
+        self.assertTrue(results[0].ok)
+        self.assertEqual(results[0].metadata["path"], "README.md")
+        self.assertEqual(results[0].metadata["requested_path"], "docs/README.md")
+        self.assertTrue(results[0].metadata["recovered"])
+        self.assertIn("auto recovered", results[0].content)
+
+    def test_invalid_tool_arguments_return_structured_schema_error(self) -> None:
+        results = self.runtime.run_structured([ParsedToolCall("read_text", {})], [])
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0].ok)
+        self.assertEqual(results[0].tool, "read_text")
+        self.assertEqual(results[0].error_type, "invalid_arguments")
+        self.assertFalse(results[0].retryable)
+        self.assertEqual(results[0].next_action, "repair_tool_arguments")
+        self.assertIn("missing required argument: path", results[0].content)
+
     def test_rewrite_result_reports_changed_files_for_validation(self) -> None:
         target = self.root / "agent.py"
         target.write_text("def handle():\n    return 'old'\n", encoding="utf-8")
@@ -73,6 +95,57 @@ class ToolResultTests(unittest.TestCase):
         self.assertEqual(results[0].changed_files, ["agent.py"])
         self.assertEqual(results[0].metadata["diff_stat"], "+1/-1")
         self.assertIn('"changed_files": ["agent.py"]', results[0].to_prompt())
+
+    def test_stale_hash_edit_auto_returns_current_file_snapshot_without_writing(self) -> None:
+        target = self.root / "agent.py"
+        target.write_text("def handle():\n    return 'current'\n", encoding="utf-8")
+
+        results = self.runtime.run_structured(
+            [
+                ParsedToolCall(
+                    "rewrite_file",
+                    {
+                        "path": "agent.py",
+                        "content": "def handle():\n    return 'new'\n",
+                        "expected_hash": "stale",
+                    },
+                )
+            ],
+            [],
+        )
+
+        self.assertFalse(results[0].ok)
+        self.assertEqual(results[0].error_type, "stale_hash")
+        self.assertEqual(results[0].metadata["current_sha256"], sha256_bytes(target.read_bytes()))
+        self.assertIn("Current file snapshot", results[0].content)
+        self.assertIn("return 'current'", results[0].content)
+        self.assertEqual(target.read_text(encoding="utf-8"), "def handle():\n    return 'current'\n")
+
+    def test_search_shell_validate_and_malformed_calls_are_native_structured_results(self) -> None:
+        (self.root / "README.md").write_text("needle\n", encoding="utf-8")
+        bad = self.root / "bad.py"
+        bad.write_text("def broken(:\n", encoding="utf-8")
+        self.ledger.files_edited.append("bad.py")
+
+        search, shell, validation, malformed = self.runtime.run_structured(
+            [
+                ParsedToolCall("search", {"pattern": "needle"}),
+                ParsedToolCall("run_command", {"command": "Get-ChildItem"}),
+                ParsedToolCall("validate", {}),
+                ParsedToolCall("__malformed_tool_call__", {"name": "edit_exact_replace", "error": "bad json"}),
+            ],
+            [],
+        )
+
+        self.assertTrue(search.ok)
+        self.assertEqual(search.tool, "search")
+        self.assertEqual(search.metadata["matches"], 1)
+        self.assertTrue(shell.ok)
+        self.assertEqual(shell.metadata["exit_code"], 0)
+        self.assertFalse(validation.ok)
+        self.assertEqual(validation.error_type, "validation_failed")
+        self.assertFalse(malformed.ok)
+        self.assertEqual(malformed.error_type, "malformed_tool_call")
 
 
 if __name__ == "__main__":

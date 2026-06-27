@@ -10,6 +10,7 @@ from .events import AgentEvent
 from .hashutil import sha256_bytes
 from .search import Searcher
 from .session import SessionLedger
+from .textfile import is_probably_binary_file
 from .tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall
 from .tool_result import ToolResult
 from .validation import ValidationHarness
@@ -43,10 +44,24 @@ class ToolRuntime:
         results: list[ToolResult] = []
         for call in calls:
             self._ensure_tool_enabled(call.name)
+            validation_error = _validate_tool_arguments(call)
+            if validation_error:
+                events.append(AgentEvent("tool", "Tool", f"{call.name}: {validation_error}", "failed"))
+                results.append(
+                    ToolResult(
+                        call.name,
+                        False,
+                        f"{call.name} invalid arguments: {validation_error}",
+                        error_type="invalid_arguments",
+                        retryable=False,
+                        next_action="repair_tool_arguments",
+                    )
+                )
+                continue
             if call.name == "read_text":
                 results.append(self._read_text(call, events))
             elif call.name == "search":
-                results.append(_coerce_tool_result("search", self._search(call, events)))
+                results.append(self._search(call, events))
             elif call.name == "edit_exact_replace":
                 results.append(self._edit_exact_replace(call, events))
             elif call.name == "create_file":
@@ -56,11 +71,11 @@ class ToolRuntime:
             elif call.name == "apply_unified_diff":
                 results.append(self._apply_unified_diff(call, events))
             elif call.name == "run_command":
-                results.append(_coerce_tool_result("run_command", self._run_command(call, events)))
+                results.append(self._run_command(call, events))
             elif call.name == "validate":
-                results.append(_coerce_tool_result("validate", self._validate(events)))
+                results.append(self._validate(events))
             elif call.name == MALFORMED_TOOL_CALL_NAME:
-                results.append(_coerce_tool_result(MALFORMED_TOOL_CALL_NAME, self._malformed_tool_call(call, events)))
+                results.append(self._malformed_tool_call(call, events))
             else:
                 events.append(AgentEvent("tool", "Tool", call.name, "failed"))
                 results.append(
@@ -82,6 +97,9 @@ class ToolRuntime:
         try:
             content = self.searcher.read_text(path)
         except Exception as exc:
+            recovered = self._recover_missing_read(path, exc, events)
+            if recovered:
+                return recovered
             events.append(AgentEvent("read", "Read", f"{path}: {exc}", "failed"))
             return ToolResult(
                 "read_text",
@@ -107,18 +125,76 @@ class ToolRuntime:
             metadata={"path": path, "sha256": file_hash},
         )
 
-    def _search(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _recover_missing_read(self, requested_path: str, exc: Exception, events: list[AgentEvent]) -> ToolResult | None:
+        if _classify_read_error(exc) != "file_not_found" or not self.searcher:
+            return None
+        requested_name = Path(requested_path).name
+        if not requested_name:
+            return None
+        matches: list[Path] = []
+        for path in self.project_root.rglob(requested_name):
+            if not path.is_file():
+                continue
+            try:
+                if self.edit_broker.policy.is_sensitive(path) or is_probably_binary_file(path):
+                    continue
+                self.edit_broker.policy.ensure_read_allowed(path)
+            except Exception:
+                continue
+            matches.append(path)
+            if len(matches) > 1:
+                return None
+        if len(matches) != 1:
+            return None
+        recovered_path = matches[0].relative_to(self.project_root).as_posix()
+        content = self.searcher.read_text(recovered_path)
+        file_hash = sha256_bytes(self.edit_broker.read_text(recovered_path).raw)
+        if recovered_path not in self.ledger.files_inspected:
+            self.ledger.files_inspected.append(recovered_path)
+        self.mark_plan("Gather context", "completed")
+        events.append(AgentEvent("read", "Read", f"{requested_path} -> {recovered_path} ({len(content.splitlines())} lines)"))
+        return ToolResult(
+            "read_text",
+            True,
+            f"read_text {recovered_path} recovered_from={requested_path}:\nsha256: {file_hash}\ncontent:\n{content}",
+            metadata={
+                "path": recovered_path,
+                "requested_path": requested_path,
+                "sha256": file_hash,
+                "recovered": True,
+            },
+        )
+
+    def _search(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         if not self.searcher:
-            return "search failed: searcher unavailable"
+            return ToolResult("search", False, "search failed: searcher unavailable", error_type="tool_unavailable")
         pattern = str(call.arguments["pattern"])
         try:
             matches = self.searcher.search(pattern)
         except Exception as exc:
             events.append(AgentEvent("search", "Search", f"{pattern!r}: {exc}", "failed"))
-            return f"search {pattern!r} failed: {exc}"
+            return ToolResult(
+                "search",
+                False,
+                f"search {pattern!r} failed: {exc}",
+                error_type="search_failed",
+                retryable=True,
+                next_action="try_different_search_pattern",
+                metadata={"pattern": pattern},
+            )
         self.mark_plan("Gather context", "completed")
         events.append(AgentEvent("search", "Search", f"{pattern!r} ({len(matches)} matches)"))
-        return "search results:\n" + "\n".join(f"{m.path}:{m.line}:{m.text}" for m in matches)
+        content = "search results:\n" + "\n".join(f"{m.path}:{m.line}:{m.text}" for m in matches)
+        return ToolResult(
+            "search",
+            True,
+            content,
+            metadata={
+                "pattern": pattern,
+                "matches": len(matches),
+                "paths": sorted({match.path for match in matches}),
+            },
+        )
 
     def _edit_exact_replace(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         path = str(call.arguments["path"])
@@ -131,7 +207,7 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Edit", f"{path}: {exc}", "failed"))
-            return _edit_failure("edit_exact_replace", path, exc)
+            return _edit_failure("edit_exact_replace", path, exc, self.edit_broker)
         return self._record_edit_result("edit_exact_replace", result, events, "Edit", "edited")
 
     def _create_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
@@ -145,7 +221,7 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Create", f"{path}: {exc}", "failed"))
-            return _edit_failure("create_file", path, exc)
+            return _edit_failure("create_file", path, exc, self.edit_broker)
         return self._record_edit_result("create_file", result, events, "Create", "created")
 
     def _rewrite_file(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
@@ -158,7 +234,7 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Rewrite", f"{path}: {exc}", "failed"))
-            return _edit_failure("rewrite_file", path, exc)
+            return _edit_failure("rewrite_file", path, exc, self.edit_broker)
         return self._record_edit_result("rewrite_file", result, events, "Rewrite", "rewrote")
 
     def _apply_unified_diff(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
@@ -171,7 +247,7 @@ class ToolRuntime:
             )
         except Exception as exc:
             events.append(AgentEvent("edit", "Patch", f"{path}: {exc}", "failed"))
-            return _edit_failure("apply_unified_diff", path, exc)
+            return _edit_failure("apply_unified_diff", path, exc, self.edit_broker)
         return self._record_edit_result("apply_unified_diff", result, events, "Patch", "patched")
 
     def _record_edit_result(self, tool: str, result, events: list[AgentEvent], event_title: str, verb: str) -> ToolResult:
@@ -189,7 +265,7 @@ class ToolRuntime:
             metadata={"path": rel, "before_hash": result.before_hash, "after_hash": result.after_hash, "diff_stat": diff_stat},
         )
 
-    def _run_command(self, call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _run_command(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         command = str(call.arguments["command"])
         try:
             result = self.command_broker.run(command)
@@ -198,37 +274,79 @@ class ToolRuntime:
             self.ledger.approvals["pending_command"] = command
             self.ledger.approvals["pending_command_cwd"] = str(self.project_root)
             events.append(AgentEvent("shell", "Shell", f"{command}: {exc}", "failed"))
-            return f"command needs approval: {command}: {exc}"
+            return ToolResult(
+                "run_command",
+                False,
+                f"command needs approval: {command}: {exc}",
+                error_type="confirmation_required",
+                retryable=True,
+                next_action="request_user_approval",
+                metadata={"command": command},
+            )
         self.ledger.commands_run.append(command)
         status = "done" if result.exit_code == 0 else "failed"
         events.append(AgentEvent("shell", "Shell", f"{command} (exit {result.exit_code}, {result.duration_seconds:.1f}s)", status))
-        return f"command {command} exit={result.exit_code}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        return ToolResult(
+            "run_command",
+            result.exit_code == 0,
+            f"command {command} exit={result.exit_code}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            error_type=None if result.exit_code == 0 else "command_failed",
+            retryable=result.exit_code != 0,
+            next_action="inspect_command_output" if result.exit_code != 0 else None,
+            metadata={
+                "command": command,
+                "exit_code": result.exit_code,
+                "duration_seconds": result.duration_seconds,
+                "timed_out": result.timed_out,
+            },
+        )
 
-    def _validate(self, events: list[AgentEvent]) -> str:
+    def _validate(self, events: list[AgentEvent]) -> ToolResult:
         if not self.validation:
-            return "validate failed: validation harness unavailable"
+            return ToolResult("validate", False, "validate failed: validation harness unavailable", error_type="tool_unavailable")
         try:
             touched = [self.project_root / path for path in self.ledger.files_edited]
             validation = self.validation.validate(touched, expected_files=touched)
         except Exception as exc:
             events.append(AgentEvent("validate", "Validate", str(exc), "failed"))
-            return f"validation failed: {exc}"
+            return ToolResult("validate", False, f"validation failed: {exc}", error_type="validation_error", retryable=True, next_action="inspect_validation_error")
         self.ledger.validation_state = {"passed": validation.passed, "failures": validation.failures}
         self.mark_plan("Validate outcome", "completed" if validation.passed else "pending")
         detail = "passed" if validation.passed else f"failed ({len(validation.failures)} failures)"
         events.append(AgentEvent("validate", "Validate", detail, "done" if validation.passed else "failed"))
-        return f"validation passed={validation.passed} failures={validation.failures}"
+        return ToolResult(
+            "validate",
+            validation.passed,
+            f"validation passed={validation.passed} failures={validation.failures}",
+            error_type=None if validation.passed else "validation_failed",
+            retryable=not validation.passed,
+            next_action="fix_validation_failures" if not validation.passed else None,
+            metadata={
+                "failures": validation.failures,
+                "checks": validation.checks,
+                "tiers": validation.tiers,
+                "unexpected_files": validation.unexpected_files,
+            },
+        )
 
     @staticmethod
-    def _malformed_tool_call(call: ParsedToolCall, events: list[AgentEvent]) -> str:
+    def _malformed_tool_call(call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         attempted = str(call.arguments.get("name", "unknown"))
         error = str(call.arguments.get("error", "malformed arguments"))
         events.append(AgentEvent("tool", "Tool", f"{attempted}: {error}", "failed"))
-        return (
-            "malformed tool call arguments for "
-            f"{attempted}: {error}\n"
+        content = (
+            f"malformed tool call arguments for {attempted}: {error}\n"
             "Retry the same tool call with valid JSON. Escape multiline strings as \\n "
             "and escape quotes inside string values as \\\". Do not change files until the tool call parses."
+        )
+        return ToolResult(
+            MALFORMED_TOOL_CALL_NAME,
+            False,
+            content,
+            error_type="malformed_tool_call",
+            retryable=True,
+            next_action="repair_tool_arguments",
+            metadata={"attempted_tool": attempted, "error": error},
         )
 
     def _ensure_tool_enabled(self, name: str) -> None:
@@ -260,6 +378,54 @@ def _diff_stat(diff: str) -> str:
     return f"+{added}/-{removed}"
 
 
+TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
+    "read_text": {"path": str},
+    "search": {"pattern": str},
+    "edit_exact_replace": {"path": str, "old": str, "new": str},
+    "create_file": {"path": str, "content": str},
+    "rewrite_file": {"path": str, "content": str, "expected_hash": str},
+    "apply_unified_diff": {"path": str, "patch": str},
+    "run_command": {"command": str},
+    "validate": {},
+    MALFORMED_TOOL_CALL_NAME: {},
+}
+
+
+OPTIONAL_TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
+    "edit_exact_replace": {"expected_hash": str},
+    "create_file": {"overwrite": bool, "expected_hash": str},
+    "apply_unified_diff": {"expected_hash": str},
+    "run_command": {"approve": bool},
+    MALFORMED_TOOL_CALL_NAME: {"name": str, "error": str, "raw_arguments": str},
+}
+
+
+def _validate_tool_arguments(call: ParsedToolCall) -> str | None:
+    required = TOOL_ARGUMENTS.get(call.name)
+    if required is None:
+        return None
+    optional = OPTIONAL_TOOL_ARGUMENTS.get(call.name, {})
+    allowed = set(required) | set(optional)
+    for key, expected_type in required.items():
+        if key not in call.arguments:
+            return f"missing required argument: {key}"
+        if not isinstance(call.arguments[key], expected_type):
+            return f"argument {key} must be {_type_name(expected_type)}"
+    for key, value in call.arguments.items():
+        expected_type = required.get(key, optional.get(key))
+        if key not in allowed:
+            return f"unknown argument: {key}"
+        if expected_type and not isinstance(value, expected_type):
+            return f"argument {key} must be {_type_name(expected_type)}"
+    return None
+
+
+def _type_name(expected_type: type | tuple[type, ...]) -> str:
+    if isinstance(expected_type, tuple):
+        return " or ".join(item.__name__ for item in expected_type)
+    return expected_type.__name__
+
+
 def _classify_read_error(exc: Exception) -> str:
     text = str(exc).lower()
     if "no such file" in text or "cannot find" in text or "not found" in text:
@@ -273,17 +439,33 @@ def _classify_read_error(exc: Exception) -> str:
     return "read_failed"
 
 
-def _edit_failure(tool: str, path: str, exc: Exception) -> ToolResult:
+def _edit_failure(tool: str, path: str, exc: Exception, edit_broker: EditBroker | None = None) -> ToolResult:
     error_type, next_action = _classify_edit_error(exc)
+    content = f"{tool} {path} failed: {exc}"
+    metadata: dict[str, Any] = {"path": path}
+    if error_type == "stale_hash" and edit_broker is not None:
+        snapshot = _current_file_snapshot(edit_broker, path)
+        if snapshot:
+            current_hash, current_text = snapshot
+            metadata["current_sha256"] = current_hash
+            content += f"\n\nCurrent file snapshot after stale hash:\nsha256: {current_hash}\ncontent:\n{current_text}"
     return ToolResult(
         tool,
         False,
-        f"{tool} {path} failed: {exc}",
+        content,
         error_type=error_type,
         retryable=error_type in {"stale_hash", "exact_block_not_found", "not_unique", "no_change"},
         next_action=next_action,
-        metadata={"path": path},
+        metadata=metadata,
     )
+
+
+def _current_file_snapshot(edit_broker: EditBroker, path: str) -> tuple[str, str] | None:
+    try:
+        snapshot = edit_broker.read_text(path)
+    except Exception:
+        return None
+    return sha256_bytes(snapshot.raw), snapshot.text
 
 
 def _classify_edit_error(exc: Exception) -> tuple[str, str]:
@@ -303,18 +485,3 @@ def _classify_edit_error(exc: Exception) -> tuple[str, str]:
     if "outside" in text or "not under project root" in text:
         return "outside_project", "stop_and_report_outside_project"
     return "edit_failed", "inspect_tool_error"
-
-
-def _coerce_tool_result(tool: str, value) -> ToolResult:
-    if isinstance(value, ToolResult):
-        return value
-    text = str(value)
-    failed = " failed:" in text or text.startswith(("unknown tool:", "malformed tool call arguments"))
-    return ToolResult(
-        tool,
-        not failed,
-        text,
-        error_type="tool_failed" if failed else None,
-        retryable=failed,
-        next_action="inspect_tool_error" if failed else None,
-    )
