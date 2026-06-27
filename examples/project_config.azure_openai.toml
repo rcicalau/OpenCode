@@ -1,0 +1,17 @@
+[model]
+timeout_seconds = 75
+
+[model.roles.main]
+provider = "azure_openai"
+model = "openai/gpt-5.4"
+
+[model.roles.compactor]
+provider = "azure_openai"
+model = "openai/gpt-5.4"
+
+[model.providers.azure_openai]
+base_url_env = "AZURE_OPENAI_BASE_URL"
+auth_client = "auth:AzureAuthClient"
+token_method = "get_token"
+model = "openai/gpt-5.4"
+verify_ssl = false

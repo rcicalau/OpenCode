@@ -51,7 +51,23 @@ Interactive chat uses a colorized terminal UI:
 
 Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default, using model `openai/gpt-5.4`.
 
-Set the endpoint URL as a persistent Windows user environment variable:
+The repo includes setup templates:
+
+```text
+examples\azure_auth_example.py
+examples\project_config.azure_openai.toml
+scripts\setup-azure-openai.ps1
+```
+
+From the project you want Code Buddy to work on, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot . -BaseUrl "https://your-endpoint/openai/v1"
+```
+
+This creates `<project>\auth.py`, creates `<project>\.pyagent\config.toml`, and persists `AZURE_OPENAI_BASE_URL`. Edit the generated `auth.py` and replace the template `AzureAuthClient.get_token()` body with your real workspace auth code.
+
+You can also set the endpoint URL manually:
 
 ```cmd
 setx AZURE_OPENAI_BASE_URL "https://your-endpoint/openai/v1"
