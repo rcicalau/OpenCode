@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Sequence
 
 
@@ -29,10 +30,15 @@ SLASH_COMMANDS = [
     "/merge-ready",
     "/review",
     "/skills",
+    "/steer",
+    "/steer-clear",
     "/status",
+    "/coding-standards",
     "/debugging",
     "/development",
+    "/documentation",
     "/reasoning",
+    "/test-writing",
     "/testing",
     "/undo",
     "/undo-session",
@@ -74,6 +80,8 @@ def help_message() -> str:
         "  /branch        Show current branch.\n"
         "  /commit MSG    Commit agent-edited files on the agent branch.\n"
         "  /skills        List project skills. Use /skill-name PROMPT to invoke one.\n"
+        "  /steer TEXT    Add project-local guidance for the active loop.\n"
+        "  /steer-clear   Clear active steering guidance.\n"
         "  /a, /approve  Approve pending action and continue.\n"
         "  /yolo          Toggle confirmation-skipping mode for confirm-level actions.\n"
         "  /exit          Quit."
@@ -253,7 +261,10 @@ def read_interactive_prompt(message: str) -> str:
 
 
 def build_prompt_key_bindings():
-    from prompt_toolkit.key_binding import KeyBindings
+    try:
+        from prompt_toolkit.key_binding import KeyBindings
+    except ImportError:
+        return SimpleNamespace(bindings=["enter", "shift-enter", "escape-enter"])
 
     bindings = KeyBindings()
 

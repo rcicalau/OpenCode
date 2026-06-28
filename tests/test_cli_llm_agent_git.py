@@ -562,6 +562,28 @@ model = "sonar-pro"
         self.assertIn("Write tutorial docstrings.", result.followup_prompt)
         self.assertIn("document agent.py", result.followup_prompt)
 
+    def test_slash_steer_persists_and_clears_project_steering(self) -> None:
+        manager = SessionManager(self.root)
+        ledger = manager.load_or_create()
+        journal = Journal(manager.session_dir(ledger.session_id) / "journal.jsonl")
+        handler = SlashCommandHandler(
+            self.root,
+            ledger,
+            manager,
+            journal,
+            GitManager(self.root, command_broker=CommandBroker(self.root, journal=journal, session_id=ledger.session_id)),
+        )
+
+        result = handler.handle("/steer Prefer tiny commits during this loop")
+        steering_path = self.root / ".buddy" / "steering" / "active.md"
+        content = steering_path.read_text(encoding="utf-8")
+        cleared = handler.handle("/steer-clear")
+
+        self.assertIn("steering updated", result.message)
+        self.assertIn("Prefer tiny commits", content)
+        self.assertIn("steering cleared", cleared.message)
+        self.assertFalse(steering_path.exists())
+
     def test_resume_prompt_can_start_fresh_session_when_previous_work_is_pending(self) -> None:
         first = ProjectSession.open(self.root)
         first.ledger.objective = "finish pending docs"

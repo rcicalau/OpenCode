@@ -4,6 +4,7 @@ Project-specific skills live here. Keep each skill focused on a reusable workflo
 
 Suggested additions:
 - `documentation.md`
-- `testing.md`
+- `test-writing.md`
+- `coding-standards.md`
 - `debugging.md`
 - `validation.md`

@@ -13,6 +13,7 @@ from .textfile import is_probably_binary_file
 
 
 CODE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".go", ".rs", ".php", ".rb"}
+TEST_PATH_PARTS = {"tests", "test", "__tests__", "spec", "specs"}
 
 
 @dataclass(slots=True)
@@ -143,17 +144,26 @@ class WorkPlanManager:
                 path, symbol = match
                 item = WorkItem(uuid.uuid4().hex[:8], "create_tests_for_class", path, symbol)
                 return self._new_plan(objective, "test_class", [item])
+        if _looks_like_test_suite(lowered):
+            items = [
+                WorkItem(uuid.uuid4().hex[:8], "create_tests_for_file", rel)
+                for rel in self._source_files_for_test_objective(objective)
+            ]
+            return self._new_plan(objective, "test_project", items) if items else None
         return None
 
     def item_prompt(self, plan: WorkPlan, item: WorkItem) -> str:
+        retry_note = _retry_note(item)
         if item.action == "document_file":
             return (
                 f"Objective: {plan.objective}\n"
                 f"Work item: document exactly one file: {item.target_path}\n"
                 f"Done criteria: {'; '.join(plan.done_criteria)}\n"
                 f"Validation strategy: {'; '.join(plan.validation_strategy)}\n"
+                f"{self._skill_guidance('documentation', 'coding-standards')}\n"
+                f"{retry_note}"
                 "Read the file if needed, then improve only this file's documentation. "
-                "Prefer docstrings and useful comments; avoid noisy comments. "
+                "Use Google style docstrings. Prefer docstrings and useful comments; avoid noisy comments. "
                 "For edits, use a raw <codebuddy_replace path=\"...\"> block with <old> and <new> sections; "
                 "do not use JSON/native edit_exact_replace for multiline code. "
                 "When done, validate if possible and give a concise slice summary."
@@ -164,8 +174,22 @@ class WorkPlanManager:
                 f"Work item: create or improve a focused test suite for class {item.symbol} in {item.target_path}.\n"
                 f"Done criteria: {'; '.join(plan.done_criteria)}\n"
                 f"Validation strategy: {'; '.join(plan.validation_strategy)}\n"
+                f"{self._skill_guidance('test-writing', 'coding-standards')}\n"
+                f"{retry_note}"
                 "Read the class and nearby code first. Create or update a relevant test file under tests/. "
                 "Cover important behavior and edge cases visible from the code. Validate when done."
+            )
+        if item.action == "create_tests_for_file":
+            return (
+                f"Objective: {plan.objective}\n"
+                f"Work item: create or improve tests for source file {item.target_path}.\n"
+                f"Done criteria: {'; '.join(plan.done_criteria)}\n"
+                f"Validation strategy: {'; '.join(plan.validation_strategy)}\n"
+                f"{self._skill_guidance('test-writing', 'coding-standards')}\n"
+                f"{retry_note}"
+                "Read the source file and existing tests first. Create or update a relevant test file under tests/. "
+                "Follow the project's existing test style, prefer narrow tests for visible behavior, "
+                "and do not edit production code unless the validation failure proves a real bug. Validate when done."
             )
         return f"Objective: {plan.objective}\nWork item: {item.label}"
 
@@ -218,6 +242,26 @@ class WorkPlanManager:
             result.append(path.relative_to(self.project_root).as_posix())
         return sorted(result)
 
+    def _python_source_files(self) -> list[str]:
+        return [
+            rel
+            for rel in self._code_files()
+            if Path(rel).suffix == ".py" and not _is_test_path(rel)
+        ]
+
+    def _source_files_for_test_objective(self, objective: str) -> list[str]:
+        target = self._extract_test_target_file(objective)
+        if target:
+            return [target]
+        lowered = objective.lower().replace("\\", "/")
+        source_files = self._python_source_files()
+        directory_matches = [
+            rel
+            for rel in source_files
+            if any(part.lower() in lowered for part in Path(rel).parts[:-1])
+        ]
+        return sorted(directory_matches or source_files)
+
     def _find_class(self, class_name: str) -> tuple[str, str] | None:
         for rel in self._code_files():
             path = self.project_root / rel
@@ -236,15 +280,29 @@ class WorkPlanManager:
         if "document" not in objective.lower() and "documentation" not in objective.lower():
             return None
         code_files = self._code_files()
-        by_name = {Path(rel).name.lower(): rel for rel in code_files}
-        by_rel = {rel.lower(): rel for rel in code_files}
-        for rel_lower, rel in by_rel.items():
-            if rel_lower in objective.lower().replace("\\", "/"):
-                return rel
-        for name, rel in by_name.items():
-            if re.search(rf"\b{re.escape(name)}\b", objective, flags=re.IGNORECASE):
-                return rel
-        return None
+        return _extract_file_reference(objective, code_files)
+
+    def _extract_test_target_file(self, objective: str) -> str | None:
+        if "test" not in objective.lower() and "coverage" not in objective.lower():
+            return None
+        return _extract_file_reference(objective, self._python_source_files())
+
+    def _skill_guidance(self, *names: str, max_chars_per_file: int = 2200) -> str:
+        chunks: list[str] = []
+        for name in names:
+            path = self.project_root / ".buddy" / "skills" / f"{name}.md"
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if len(text) > max_chars_per_file:
+                text = text[:max_chars_per_file].rstrip() + "\n...[truncated]..."
+            chunks.append(f"/{name}:\n{text}")
+        if not chunks:
+            return ""
+        return "Skill guidance:\n" + "\n\n".join(chunks) + "\n\n"
 
     @staticmethod
     def _decode(data: dict) -> WorkPlan:
@@ -252,10 +310,42 @@ class WorkPlanManager:
         return WorkPlan(**data)
 
 
+def _extract_file_reference(objective: str, code_files: list[str]) -> str | None:
+    lowered = objective.lower().replace("\\", "/")
+    by_name = {Path(rel).name.lower(): rel for rel in code_files}
+    by_rel = {rel.lower(): rel for rel in code_files}
+    for rel_lower, rel in by_rel.items():
+        if rel_lower in lowered:
+            return rel
+    for name, rel in by_name.items():
+        if re.search(rf"\b{re.escape(name)}\b", objective, flags=re.IGNORECASE):
+            return rel
+    for rel in code_files:
+        stem = Path(rel).stem
+        if re.search(rf"\b{re.escape(stem)}\b", objective, flags=re.IGNORECASE):
+            return rel
+    return None
+
+
 def _looks_like_document_codebase(lowered: str) -> bool:
     return (
         any(phrase in lowered for phrase in ("document each file", "document every file", "document all files", "document the codebase"))
         or ("documentation" in lowered and "codebase" in lowered)
+    )
+
+
+def _looks_like_test_suite(lowered: str) -> bool:
+    return ("test" in lowered or "coverage" in lowered) and any(
+        phrase in lowered
+        for phrase in (
+            "full suite",
+            "test suite",
+            "tests for",
+            "create tests",
+            "write tests",
+            "add tests",
+            "coverage",
+        )
     )
 
 
@@ -275,7 +365,7 @@ def _contract_for_kind(kind: str) -> tuple[list[str], list[str], list[str]]:
     ]
     if kind in {"document_codebase", "document_file"}:
         done_criteria.append("Target files contain useful docstrings or comments without noisy restatement.")
-    if kind == "test_class":
+    if kind in {"test_class", "test_project"}:
         done_criteria.append("A focused test file exists under tests/ or an existing relevant test file is improved.")
         validation_strategy.append("Prefer the narrowest relevant test command before broader test runs.")
     return assumptions, done_criteria, validation_strategy
@@ -309,3 +399,20 @@ def _reset_blocked_items(plan: WorkPlan) -> None:
     for item in plan.blocked_items():
         item.status = "pending"
         item.last_error = None
+
+
+def _retry_note(item: WorkItem) -> str:
+    if not item.last_error:
+        return ""
+    return (
+        f"Previous attempt failed: {item.last_error}\n"
+        "Recover by inspecting the failing file/output, changing strategy, and validating again. "
+        "Do not repeat the same failed edit.\n\n"
+    )
+
+
+def _is_test_path(rel: str) -> bool:
+    path = Path(rel)
+    lowered_parts = {part.lower() for part in path.parts}
+    name = path.name.lower()
+    return bool(lowered_parts & TEST_PATH_PARTS) or name.startswith("test_") or name.endswith("_test.py")

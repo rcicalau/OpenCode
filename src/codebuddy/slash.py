@@ -10,6 +10,7 @@ from .journal import Journal
 from .objective_state import IDLE
 from .paths import PathPolicy
 from .session import SessionLedger, SessionManager
+from .steering import SteeringInbox
 from .workplan import WorkPlanManager
 
 
@@ -79,6 +80,7 @@ class SlashCommandHandler:
                 },
                 "validation": self.ledger.validation_state,
                 "yolo": self.yolo_state.get("enabled", False),
+                "steering_active": bool(SteeringInbox(self.project_root).read()),
             }
             return SlashResult(True, False, json.dumps(payload, indent=2))
         if command == "/compact":
@@ -144,6 +146,16 @@ class SlashCommandHandler:
             return SlashResult(True, False, "/editor is available inside interactive chat")
         if command == "/skills":
             return SlashResult(True, False, self._skills_listing())
+        if command == "/steer":
+            inbox = SteeringInbox(self.project_root)
+            if not arg.strip():
+                current = inbox.read()
+                return SlashResult(True, False, current or "no active steering")
+            path = inbox.append(arg)
+            return SlashResult(True, False, f"steering updated: {path.relative_to(self.project_root).as_posix()}")
+        if command == "/steer-clear":
+            cleared = SteeringInbox(self.project_root).clear()
+            return SlashResult(True, False, "steering cleared" if cleared else "no active steering")
         skill = self._skill_for_command(command)
         if skill:
             skill_name, skill_path, content = skill

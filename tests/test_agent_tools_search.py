@@ -25,7 +25,7 @@ from codebuddy.search import Searcher
 from codebuddy.session import SessionManager
 from codebuddy.tool_runtime import ToolRuntime
 from codebuddy.tool_calls import parse_text_edit_blocks, parse_text_tool_calls, strip_tool_calls
-from codebuddy.validation import ValidationHarness
+from codebuddy.validation import ValidationHarness, ValidationResult
 from codebuddy.errors import CodeBuddyError, DeniedByPolicy
 
 
@@ -43,7 +43,12 @@ class AgentToolsSearchTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def make_agent(self, responses: list[str | LLMResponse], enabled_tools: dict[str, bool] | None = None) -> CodeBuddyAgent:
+    def make_agent(
+        self,
+        responses: list[str | LLMResponse],
+        enabled_tools: dict[str, bool] | None = None,
+        **agent_kwargs,
+    ) -> CodeBuddyAgent:
         return CodeBuddyAgent(
             self.root,
             self.ledger,
@@ -54,6 +59,7 @@ class AgentToolsSearchTests(unittest.TestCase):
             Searcher(self.policy),
             ValidationHarness(self.root, self.command),
             enabled_tools,
+            **agent_kwargs,
         )
 
     def test_agent_retries_transient_rate_limit_errors(self) -> None:
@@ -246,6 +252,21 @@ def handle():
         self.assertEqual(self.ledger.approvals["pending_command"], command)
         self.assertEqual(self.ledger.objective_state, APPROVAL_WAIT)
         self.assertFalse((self.root / "approved.txt").exists())
+
+    def test_workplan_preserves_command_approval_wait_state(self) -> None:
+        command = "Write-Output hi > approved.txt"
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                f'<tool_call>{{"name":"run_command","arguments":{{"command":"{command}"}}}}</tool_call>',
+            ]
+        )
+
+        result = agent.handle("Document each file in the codebase")
+
+        self.assertIn("Command needs approval", result.message)
+        self.assertEqual(self.ledger.pending_next_step, "approve command before execution")
+        self.assertEqual(self.ledger.objective_state, APPROVAL_WAIT)
 
     def test_agent_loops_over_multiple_tool_rounds_before_answering(self) -> None:
         (self.root / "README.md").write_text("needle lives here\n", encoding="utf-8")
@@ -624,7 +645,8 @@ def handle():
             [
                 '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"def a():\\n    return 1\\n","new":"def a():\\n    \\"\\"\\"Return one.\\"\\"\\"\\n    return 1\\n"}}</tool_call>',
                 "Documented a.py.",
-            ]
+            ],
+            max_work_items_per_prompt=1,
         )
 
         result = agent.handle("Document each file in the codebase")
@@ -637,6 +659,86 @@ def handle():
         saved = (self.root / ".buddy" / "workplans" / "current.json").read_text(encoding="utf-8")
         self.assertIn('"status": "completed"', saved)
         self.assertIn('"status": "pending"', saved)
+
+    def test_document_codebase_workplan_can_complete_multiple_files_in_one_prompt(self) -> None:
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        (self.root / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"def a():\\n    return 1\\n","new":"def a():\\n    \\"\\"\\"Return one.\\"\\"\\"\\n    return 1\\n"}}</tool_call>',
+                "Documented a.py.",
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"b.py","old":"def b():\\n    return 2\\n","new":"def b():\\n    \\"\\"\\"Return two.\\"\\"\\"\\n    return 2\\n"}}</tool_call>',
+                "Documented b.py.",
+            ]
+        )
+
+        result = agent.handle("Document each file in the codebase using Google style")
+
+        self.assertIn("2/2 completed", result.message)
+        self.assertEqual(self.ledger.pending_next_step, None)
+        self.assertIn('"""Return one."""', (self.root / "a.py").read_text(encoding="utf-8"))
+        self.assertIn('"""Return two."""', (self.root / "b.py").read_text(encoding="utf-8"))
+        self.assertIn("Google style", "\n".join(message.content for message in agent.llm.calls[0]))
+
+    def test_workplan_prompts_include_active_user_steering(self) -> None:
+        (self.root / ".buddy" / "steering").mkdir(parents=True)
+        (self.root / ".buddy" / "steering" / "active.md").write_text(
+            "Prefer short module docstrings and do not rename symbols.\n",
+            encoding="utf-8",
+        )
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"def a():\\n    return 1\\n","new":"def a():\\n    \\"\\"\\"Return one.\\"\\"\\"\\n    return 1\\n"}}</tool_call>',
+                "Documented a.py.",
+            ]
+        )
+
+        agent.handle("Document each file in the codebase")
+
+        first_prompt = "\n".join(message.content for message in agent.llm.calls[0])
+        self.assertIn("User steering", first_prompt)
+        self.assertIn("do not rename symbols", first_prompt)
+
+    def test_workplan_retries_validation_failure_before_blocking(self) -> None:
+        class FailOnceValidation(ValidationHarness):
+            def __init__(self, root: Path, command: CommandBroker) -> None:
+                super().__init__(root, command)
+                self.calls = 0
+
+            def validate(self, touched_files=None, expected_files=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return ValidationResult(False, failures=["temporary validation failure"])
+                return super().validate(touched_files, expected_files)
+
+        target = self.root / "a.py"
+        target.write_text("def a():\n    return 1\n", encoding="utf-8")
+        validation = FailOnceValidation(self.root, self.command)
+        agent = CodeBuddyAgent(
+            self.root,
+            self.ledger,
+            FakeLLMClient(
+                [
+                    '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"def a():\\n    return 1\\n","new":"def a():\\n    \\"\\"\\"Return one, draft.\\n\\n    Returns:\\n        int: The number one.\\n    \\"\\"\\"\\n    return 1\\n"}}</tool_call>',
+                    "Draft documentation added.",
+                    '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"\\"\\"\\"Return one, draft.\\n\\n    Returns:\\n        int: The number one.\\n    \\"\\"\\"","new":"\\"\\"\\"Return the number one.\\n\\n    Returns:\\n        int: Always returns 1.\\n    \\"\\"\\""}}</tool_call>',
+                    "Fixed validation failure.",
+                ]
+            ),
+            self.edit,
+            self.command,
+            GitManager(self.root),
+            Searcher(self.policy),
+            validation,
+            max_item_attempts=2,
+        )
+
+        result = agent.handle("Document each file in the codebase")
+
+        self.assertIn("1/1 completed", result.message)
+        self.assertEqual(validation.calls, 2)
+        self.assertIn("Always returns 1", target.read_text(encoding="utf-8"))
 
     def test_single_file_documentation_task_uses_document_workplan(self) -> None:
         (self.root / "agent.py").write_text("def handle():\n    return 'ok'\n", encoding="utf-8")
@@ -660,7 +762,8 @@ def handle():
             [
                 '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"a.py","old":"def a():\\n    return 1\\n","new":"def a():\\n    \\"\\"\\"Return one.\\"\\"\\"\\n    return 1\\n"}}</tool_call>',
                 "Documented a.py.",
-            ]
+            ],
+            max_work_items_per_prompt=1,
         )
         first.handle("Document each file in the codebase")
         second = self.make_agent(
@@ -703,6 +806,23 @@ def handle():
         self.assertIn("1/1 completed", result.message)
         self.assertTrue((self.root / "tests" / "test_widget.py").exists())
         self.assertTrue(self.ledger.validation_state["passed"])
+
+    def test_full_test_suite_workplan_expands_to_python_source_files(self) -> None:
+        src = self.root / "src"
+        src.mkdir()
+        (src / "app.py").write_text("def add(left, right):\n    return left + right\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                """<tool_call>{"name":"create_file","arguments":{"path":"tests/test_app.py","content":"from src.app import add\\n\\ndef test_add_returns_sum():\\n    assert add(2, 3) == 5\\n"}}</tool_call>""",
+                "Created tests for src/app.py.",
+            ]
+        )
+
+        result = agent.handle("Create a full suite of tests for app")
+
+        self.assertIn("1/1 completed", result.message)
+        self.assertTrue((self.root / "tests" / "test_app.py").exists())
+        self.assertIn("create or improve tests for source file src/app.py", "\n".join(message.content for message in agent.llm.calls[0]))
 
     def test_chat_questions_are_grounded_in_project_context(self) -> None:
         (self.root / "README.md").write_text("# Widget Service\n\nProcesses widget invoices.\n", encoding="utf-8")

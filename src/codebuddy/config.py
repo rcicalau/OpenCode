@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import copy
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .errors import ConfigError
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised only on Python < 3.11
+    import tomli as tomllib
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -73,6 +77,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "agent": {
         "max_tool_iterations": 200,
+        "max_work_items_per_prompt": 200,
+        "max_item_attempts": 3,
         "no_progress_repeat_limit": 8,
         "rate_limit_retries": 4,
         "rate_limit_backoff_seconds": 2,
@@ -159,6 +165,12 @@ def validate_config(config: dict[str, Any]) -> None:
     max_tool_iterations = config["agent"].get("max_tool_iterations", 0)
     if not isinstance(max_tool_iterations, int) or max_tool_iterations < 0:
         raise ConfigError("agent.max_tool_iterations must be a non-negative integer")
+    max_work_items_per_prompt = config["agent"].get("max_work_items_per_prompt", 200)
+    if not isinstance(max_work_items_per_prompt, int) or max_work_items_per_prompt <= 0:
+        raise ConfigError("agent.max_work_items_per_prompt must be a positive integer")
+    max_item_attempts = config["agent"].get("max_item_attempts", 3)
+    if not isinstance(max_item_attempts, int) or max_item_attempts <= 0:
+        raise ConfigError("agent.max_item_attempts must be a positive integer")
     no_progress_repeat_limit = config["agent"].get("no_progress_repeat_limit", 8)
     if not isinstance(no_progress_repeat_limit, int) or no_progress_repeat_limit <= 0:
         raise ConfigError("agent.no_progress_repeat_limit must be a positive integer")

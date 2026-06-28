@@ -231,10 +231,21 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertTrue((self.root / ".buddy" / "templates").is_dir())
         self.assertTrue((self.root / ".buddy" / "validators").is_dir())
         self.assertTrue((self.root / ".buddy" / "tools").is_dir())
+        self.assertTrue((self.root / ".buddy" / "steering").is_dir())
         self.assertTrue((self.root / ".buddy" / "skills" / "reasoning.md").exists())
         self.assertTrue((self.root / ".buddy" / "skills" / "development.md").exists())
         self.assertTrue((self.root / ".buddy" / "skills" / "testing.md").exists())
         self.assertTrue((self.root / ".buddy" / "skills" / "debugging.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "documentation.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "test-writing.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "coding-standards.md").exists())
+
+    def test_default_config_has_long_task_workplan_limits(self) -> None:
+        loaded = load_config(self.root)
+
+        self.assertEqual(loaded.config["agent"]["max_tool_iterations"], 200)
+        self.assertEqual(loaded.config["agent"]["max_work_items_per_prompt"], 200)
+        self.assertEqual(loaded.config["agent"]["max_item_attempts"], 3)
 
     def test_project_context_includes_buddy_md_and_skills(self) -> None:
         ensure_buddy_scaffold(self.root)

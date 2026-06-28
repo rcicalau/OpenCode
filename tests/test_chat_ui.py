@@ -40,6 +40,11 @@ class ChatUiTests(unittest.TestCase):
         self.assertIn("/approve", SLASH_COMMANDS)
         self.assertIn("/approve-branch", SLASH_COMMANDS)
         self.assertIn("/skills", SLASH_COMMANDS)
+        self.assertIn("/documentation", SLASH_COMMANDS)
+        self.assertIn("/test-writing", SLASH_COMMANDS)
+        self.assertIn("/coding-standards", SLASH_COMMANDS)
+        self.assertIn("/steer", SLASH_COMMANDS)
+        self.assertIn("/steer-clear", SLASH_COMMANDS)
 
     def test_read_prompt_single_line_sends_on_enter(self) -> None:
         values = iter(["hello"])

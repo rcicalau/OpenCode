@@ -54,6 +54,7 @@ from .objective_state import APPROVAL_WAIT, BLOCKED, COMPLETE, IDLE, PLANNING, W
 from .project_context import build_project_context
 from .search import Searcher
 from .session import PlanItem, SessionLedger
+from .steering import SteeringInbox
 from .tool_calls import (
     ParsedToolCall,
     parse_text_edit_blocks,
@@ -175,6 +176,8 @@ class CodeBuddyAgent:
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
         max_tool_iterations: int | None = 200,
+        max_work_items_per_prompt: int = 200,
+        max_item_attempts: int = 3,
         no_progress_repeat_limit: int = 8,
         model_timeout_seconds: float = 75,
         rate_limit_retries: int = 4,
@@ -192,6 +195,12 @@ class CodeBuddyAgent:
         if max_tool_iterations is not None and max_tool_iterations < 0:
             raise ValueError("max_tool_iterations must be non-negative or None")
         self.max_tool_iterations = max_tool_iterations or None
+        if max_work_items_per_prompt <= 0:
+            raise ValueError("max_work_items_per_prompt must be positive")
+        self.max_work_items_per_prompt = max_work_items_per_prompt
+        if max_item_attempts <= 0:
+            raise ValueError("max_item_attempts must be positive")
+        self.max_item_attempts = max_item_attempts
         if no_progress_repeat_limit <= 0:
             raise ValueError("no_progress_repeat_limit must be positive")
         self.no_progress_repeat_limit = no_progress_repeat_limit
@@ -402,64 +411,114 @@ class CodeBuddyAgent:
         return bool(getattr(events, "sink", None))
 
     def _handle_work_plan(self, manager: WorkPlanManager, plan: WorkPlan, project_context: str, events: list[AgentEvent]) -> AgentResult:
-        item = plan.next_item()
-        if not item:
+        messages: list[str] = []
+        processed = 0
+        while processed < self.max_work_items_per_prompt:
+            item = plan.next_item()
+            if not item:
+                break
+            message, finished = self._run_work_item(manager, plan, item, project_context, events)
+            if message.strip():
+                messages.append(message.strip())
+            manager.save(plan)
             self._sync_ledger_plan(plan)
-            if plan.blocked_items():
-                self.ledger.objective_state = BLOCKED
-                blocked = ", ".join(f"{blocked.label}: {blocked.last_error or 'blocked'}" for blocked in plan.blocked_items()[:5])
-                self.ledger.pending_next_step = f"resolve blocked work items: {blocked}"
-                return AgentResult(
-                    mode="execute",
-                    message=f"Work plan blocked: {manager.summary(plan)}\nBlocked: {blocked}\nUse 'retry blocked' after resolving the issue.",
-                    changed_files=list(self.ledger.files_edited),
-                    events=events,
-                )
-            self.ledger.objective_state = COMPLETE
-            return AgentResult(
-                mode="execute",
-                message=f"Work plan complete: {manager.summary(plan)}",
-                changed_files=list(self.ledger.files_edited),
-                events=events,
-            )
-        before_edited = set(self.ledger.files_edited)
-        self.ledger.objective_state = WORKING
-        item.status = "in_progress"
-        item.attempts += 1
-        manager.save(plan)
-        self._sync_ledger_plan(plan)
-        self.ledger.pending_next_step = item.label
-        events.append(AgentEvent("work", "Work", f"{item.label}"))
+            if self.ledger.objective_state in {APPROVAL_WAIT, BLOCKED} or not finished:
+                break
+            processed += 1
+        if plan.next_item() and processed >= self.max_work_items_per_prompt:
+            self.ledger.objective_state = WORKING
+            events.append(AgentEvent("work", "Work", f"paused after {processed} work items; continue to resume"))
+        return self._work_plan_result(manager, plan, messages, events)
 
-        message = self._run_model_loop(manager.item_prompt(plan, item), project_context, events)
-        changed_now = [path for path in self.ledger.files_edited if path not in before_edited]
-        validation_passed = self._validate_work_slice(events)
-        item.validation_passed = validation_passed
-        required_change = self._item_required_change_done(item, changed_now)
-        if validation_passed and required_change:
-            item.status = "completed"
-            item.summary = message
-            item.last_error = None
-            self.ledger.completed_actions.append(f"completed work item {item.label}")
-            self._checkpoint_work_slice(item, changed_now, events)
-        else:
-            self.ledger.objective_state = BLOCKED
-            item.status = "blocked"
+    def _run_work_item(
+        self,
+        manager: WorkPlanManager,
+        plan: WorkPlan,
+        item: WorkItem,
+        project_context: str,
+        events: list[AgentEvent],
+    ) -> tuple[str, bool]:
+        before_edited = set(self.ledger.files_edited)
+        last_message = ""
+        while item.attempts < self.max_item_attempts:
+            self.ledger.objective_state = WORKING
+            item.status = "in_progress"
+            item.attempts += 1
+            manager.save(plan)
+            self._sync_ledger_plan(plan)
+            self.ledger.pending_next_step = item.label
+            events.append(AgentEvent("work", "Work", f"{item.label} attempt {item.attempts}/{self.max_item_attempts}"))
+
+            prompt = self._with_active_steering(manager.item_prompt(plan, item))
+            last_message = self._run_model_loop(prompt, project_context, events)
+            if self.ledger.objective_state == APPROVAL_WAIT:
+                manager.save(plan)
+                return last_message, False
+
+            changed_now = [path for path in self.ledger.files_edited if path not in before_edited]
+            validation_passed = self._validate_work_slice(events)
+            item.validation_passed = validation_passed
+            required_change = self._item_required_change_done(item, changed_now)
+            if validation_passed and required_change:
+                item.status = "completed"
+                item.summary = last_message
+                item.last_error = None
+                self.ledger.completed_actions.append(f"completed work item {item.label}")
+                self._checkpoint_work_slice(item, changed_now, events)
+                return last_message, True
+
             item.last_error = "validation failed" if not validation_passed else "no expected file change detected"
-            self.ledger.blockers.append(f"{item.label}: {item.last_error}")
+            if not validation_passed and item.attempts < self.max_item_attempts:
+                item.status = "pending"
+                self.ledger.objective_state = WORKING
+                events.append(AgentEvent("work", "Retry", f"{item.label}: {item.last_error}"))
+                manager.save(plan)
+                continue
+            item.status = "blocked"
+            self.ledger.objective_state = BLOCKED
+            if f"{item.label}: {item.last_error}" not in self.ledger.blockers:
+                self.ledger.blockers.append(f"{item.label}: {item.last_error}")
             events.append(AgentEvent("work", "Work", item.last_error, "failed"))
-        manager.save(plan)
+            return last_message, False
+
+        item.status = "blocked"
+        item.last_error = item.last_error or "attempt budget exhausted"
+        self.ledger.objective_state = BLOCKED
+        events.append(AgentEvent("work", "Work", item.last_error, "failed"))
+        return last_message, False
+
+    def _work_plan_result(self, manager: WorkPlanManager, plan: WorkPlan, messages: list[str], events: list[AgentEvent]) -> AgentResult:
         self._sync_ledger_plan(plan)
         next_item = plan.next_item()
-        self.ledger.pending_next_step = next_item.label if next_item else None
-        if self.ledger.objective_state != BLOCKED:
-            self.ledger.objective_state = WORKING if next_item else COMPLETE
+        approval_waiting = self.ledger.objective_state == APPROVAL_WAIT
+        if not approval_waiting:
+            self.ledger.pending_next_step = next_item.label if next_item else None
+        if approval_waiting:
+            summary = f"Work plan paused for approval: {manager.summary(plan)}"
+        elif plan.blocked_items():
+            self.ledger.objective_state = BLOCKED
+            blocked = ", ".join(f"{blocked.label}: {blocked.last_error or 'blocked'}" for blocked in plan.blocked_items()[:5])
+            self.ledger.pending_next_step = f"resolve blocked work items: {blocked}"
+            summary = f"Work plan blocked: {manager.summary(plan)}\nBlocked: {blocked}\nUse 'retry blocked' after resolving the issue."
+        elif next_item:
+            self.ledger.objective_state = WORKING
+            summary = f"Work plan: paused {manager.summary(plan)}\nUse `continue` to resume."
+        else:
+            self.ledger.objective_state = COMPLETE
+            summary = f"Work plan complete: {manager.summary(plan)}"
+        body = "\n\n".join(messages[-3:])
         return AgentResult(
             mode="execute",
-            message=(message.strip() + "\n\n" if message.strip() else "") + f"Work plan: {manager.summary(plan)}",
+            message=(body + "\n\n" if body else "") + summary,
             changed_files=list(self.ledger.files_edited),
             events=events,
         )
+
+    def _with_active_steering(self, prompt: str) -> str:
+        steering = SteeringInbox(self.project_root).read()
+        if not steering:
+            return prompt
+        return f"{prompt}\n\nUser steering:\n{steering}\n"
 
     def _run_text_tool_calls(self, text: str, events: list[AgentEvent]) -> list[str]:
         return [result.to_prompt() for result in self._run_tool_calls(parse_text_tool_calls(text), events)]
@@ -493,6 +552,8 @@ class CodeBuddyAgent:
         if item.action == "document_file":
             return item.target_path in self.ledger.files_edited
         if item.action == "create_tests_for_class":
+            return any(path.startswith("tests/") or Path(path).name.startswith("test_") for path in changed_now)
+        if item.action == "create_tests_for_file":
             return any(path.startswith("tests/") or Path(path).name.startswith("test_") for path in changed_now)
         return bool(changed_now)
 
