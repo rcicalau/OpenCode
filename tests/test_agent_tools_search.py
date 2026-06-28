@@ -56,6 +56,37 @@ class AgentToolsSearchTests(unittest.TestCase):
             enabled_tools,
         )
 
+    def test_agent_retries_transient_rate_limit_errors(self) -> None:
+        class FlakyRateLimitLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, messages, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise CodeBuddyError("provider HTTP error 429: rate limit exceeded")
+                return LLMResponse("Recovered after retry.")
+
+        llm = FlakyRateLimitLLM()
+        agent = CodeBuddyAgent(
+            self.root,
+            self.ledger,
+            llm,
+            self.edit,
+            self.command,
+            GitManager(self.root),
+            Searcher(self.policy),
+            ValidationHarness(self.root, self.command),
+            rate_limit_retries=2,
+            rate_limit_backoff_seconds=0,
+        )
+
+        result = agent.handle("What is here?")
+
+        self.assertEqual(result.message, "Recovered after retry.")
+        self.assertEqual(llm.calls, 2)
+        self.assertTrue(any(event.title == "Model" and "rate limited" in event.detail for event in result.events))
+
     def test_text_tool_call_parser(self) -> None:
         text = 'hello <tool_call>{"name":"read_text","arguments":{"path":"a.py"}}</tool_call> bye'
 
@@ -603,7 +634,7 @@ def handle():
         self.assertIn("b.py", self.ledger.pending_next_step)
         self.assertIn('"""Return one."""', (self.root / "a.py").read_text(encoding="utf-8"))
         self.assertNotIn('"""', (self.root / "b.py").read_text(encoding="utf-8"))
-        saved = (self.root / ".pyagent" / "workplans" / "current.json").read_text(encoding="utf-8")
+        saved = (self.root / ".buddy" / "workplans" / "current.json").read_text(encoding="utf-8")
         self.assertIn('"status": "completed"', saved)
         self.assertIn('"status": "pending"', saved)
 

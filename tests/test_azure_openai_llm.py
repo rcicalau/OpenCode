@@ -20,7 +20,7 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.created_clients = []
         self.created_http_clients = []
-        self.old_modules = {name: sys.modules.get(name) for name in ("auth", "openai", "httpx")}
+        self.old_modules = {name: sys.modules.get(name) for name in ("auth", "ai_mart", "azure_auth", "openai", "httpx")}
 
     def tearDown(self) -> None:
         for name, module in self.old_modules.items():
@@ -161,86 +161,71 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
         self.assertEqual(captured["payload"]["model"], "openai/gpt-5.4")
 
-    def test_auth_check_loads_base_url_from_import(self) -> None:
-        import codebuddy.ai_mart as ai_mart
-
+    def test_auth_check_loads_base_url_from_project_import(self) -> None:
+        (self.root / "ai_mart.py").write_text('base_url = "https://aimark.example/openai/v1"\n', encoding="utf-8")
         (self.root / "auth.py").write_text(
             "class AzureAuthClient:\n"
             "    def get_token(self):\n"
             "        return 'project-token'\n",
             encoding="utf-8",
         )
-        original = ai_mart.base_url
         captured = {}
-        try:
-            ai_mart.base_url = "https://aimark.example/openai/v1"
-            result = auth_check(
-                {
-                    "model": {
-                        "roles": {"main": {"model": "openai/gpt-5.4"}},
-                        "providers": {
-                            "azure_openai": {
-                                "base_url_import": "codebuddy.ai_mart:base_url",
-                                "auth_client": "auth:AzureAuthClient",
-                                "token_method": "get_token",
-                                "model": "openai/gpt-5.4",
-                            }
-                        },
-                    }
-                },
-                "azure_openai",
-                poster=lambda url, headers, payload, timeout: captured.update({"url": url})
-                or (200, "{}"),
-                project_root=self.root,
-            )
-        finally:
-            ai_mart.base_url = original
+        result = auth_check(
+            {
+                "model": {
+                    "roles": {"main": {"model": "openai/gpt-5.4"}},
+                    "providers": {
+                        "azure_openai": {
+                            "base_url_import": "ai_mart:base_url",
+                            "auth_client": "auth:AzureAuthClient",
+                            "token_method": "get_token",
+                            "model": "openai/gpt-5.4",
+                        }
+                    },
+                }
+            },
+            "azure_openai",
+            poster=lambda url, headers, payload, timeout: captured.update({"url": url})
+            or (200, "{}"),
+            project_root=self.root,
+        )
 
         self.assertTrue(result.persisted)
         self.assertEqual(captured["url"], "https://aimark.example/openai/v1/chat/completions")
 
-    def test_provider_config_loads_base_url_from_import(self) -> None:
-        import codebuddy.ai_mart as ai_mart
+    def test_provider_config_loads_base_url_from_project_import(self) -> None:
+        (self.root / "ai_mart.py").write_text('base_url = "https://aimark.example/openai/v1"\n', encoding="utf-8")
 
-        original = ai_mart.base_url
-        try:
-            ai_mart.base_url = "https://aimark.example/openai/v1"
-            client = AzureAuthOpenAIClient.from_provider_config(
-                {
-                    "base_url_import": "codebuddy.ai_mart:base_url",
-                    "auth_client": "codebuddy.azure_auth:AzureAuthClient",
-                    "token_method": "get_token",
-                    "model": "openai/gpt-5.4",
-                },
-                "openai/gpt-5.4",
-            )
-        finally:
-            ai_mart.base_url = original
+        client = AzureAuthOpenAIClient.from_provider_config(
+            {
+                "base_url_import": "ai_mart:base_url",
+                "auth_client": "azure_auth:AzureAuthClient",
+                "token_method": "get_token",
+                "model": "openai/gpt-5.4",
+            },
+            "openai/gpt-5.4",
+            project_root=self.root,
+        )
 
         self.assertEqual(client.base_url, "https://aimark.example/openai/v1")
 
-    def test_bundled_default_auth_client_uses_ai_mart_auth_client(self) -> None:
-        import codebuddy.ai_mart as ai_mart
+    def test_external_default_auth_client_uses_access_token_contract(self) -> None:
+        (self.root / "azure_auth.py").write_text(
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return type('Token', (), {'access_token': 'ai-mart-token'})()\n",
+            encoding="utf-8",
+        )
 
-        original = ai_mart.auth_client
-
-        class FakeAiMartAuthClient:
-            def authenticate_broker(self):
-                return types.SimpleNamespace(access_token="ai-mart-token")
-
-        try:
-            ai_mart.auth_client = FakeAiMartAuthClient()
-            token = load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
-        finally:
-            ai_mart.auth_client = original
+        token = load_auth_token(auth_client_path="azure_auth:AzureAuthClient", project_root=self.root)
 
         self.assertEqual(token.value, "ai-mart-token")
 
-    def test_bundled_default_auth_client_fails_with_ai_mart_setup_guidance(self) -> None:
+    def test_external_default_auth_client_fails_when_missing(self) -> None:
         with self.assertRaises(ConfigError) as context:
-            load_auth_token(auth_client_path="codebuddy.azure_auth:AzureAuthClient")
+            load_auth_token(auth_client_path="azure_auth:AzureAuthClient", project_root=self.root)
 
-        self.assertIn("codebuddy.ai_mart.auth_client is not configured", str(context.exception))
+        self.assertIn("could not import auth client module", str(context.exception))
 
 
 if __name__ == "__main__":

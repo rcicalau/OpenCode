@@ -100,6 +100,22 @@ class GitManager:
         self._git(["commit", "-m", message], check=True, approve=True)
         return True
 
+    def has_remote(self, name: str = "origin") -> bool:
+        status = self.status()
+        if not status.is_repo:
+            return False
+        remote = self._git(["remote"], check=False).stdout.splitlines()
+        return name in {item.strip() for item in remote}
+
+    def push_current_branch(self, remote: str = "origin") -> bool:
+        status = self.status()
+        if not status.is_repo or not status.branch or not status.branch.startswith(self.branch_prefix):
+            return False
+        if not self.has_remote(remote):
+            return False
+        self._git(["push", "-u", remote, status.branch], check=True, approve=True)
+        return True
+
     def _run(self, args: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         completed, timed_out, _duration = self._run_git_process(args)
         if check and (timed_out or completed.returncode != 0):
@@ -228,7 +244,7 @@ def _user_dirty_porcelain(porcelain: str) -> str:
     for line in porcelain.splitlines():
         path = line[3:] if len(line) >= 4 else line
         normalized = path.replace("\\", "/")
-        if normalized == ".pyagent" or normalized.startswith(".pyagent/"):
+        if normalized == ".buddy" or normalized.startswith(".buddy/"):
             continue
         lines.append(line)
     return "\n".join(lines)

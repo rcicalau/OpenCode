@@ -9,9 +9,10 @@ build/
 dist/
 *.egg-info/
 .venv/
-.pyagent/
-.pyagent/sessions/
-.pyagent/index/
-.pyagent/cache/
-.pyagent/logs/
-.pyagent/workplans/
+.buddy/sessions/
+.buddy/index/
+.buddy/cache/
+.buddy/logs/
+.buddy/workplans/
+.buddy/plans/
+.buddy/config.toml

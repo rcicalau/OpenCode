@@ -95,6 +95,23 @@ class ChatUiTests(unittest.TestCase):
 
         self.assertIn("Edit", stdout.getvalue())
 
+    def test_renderer_prints_edit_diff_body(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            ChatRenderer().events(
+                [
+                    SimpleNamespace(
+                        kind="edit",
+                        title="Edit",
+                        detail="app.py (+1/-1)",
+                        status="done",
+                        body="--- a/app.py\n+++ b/app.py\n@@\n-old\n+new\n",
+                    )
+                ]
+            )
+
+        self.assertIn("+new", stdout.getvalue())
+
     def test_renderer_can_stream_assistant_chunks(self) -> None:
         stdout = StringIO()
         with redirect_stdout(stdout):

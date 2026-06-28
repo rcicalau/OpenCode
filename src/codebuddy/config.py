@@ -27,8 +27,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
         "providers": {
             "azure_openai": {
-                "base_url_import": "codebuddy.ai_mart:base_url",
-                "auth_client": "codebuddy.azure_auth:AzureAuthClient",
+                "base_url_import": "ai_mart:base_url",
+                "auth_client": "azure_auth:AzureAuthClient",
                 "token_method": "get_token",
                 "model": "openai/gpt-5.4",
                 "verify_ssl": False,
@@ -72,8 +72,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "targeted_first": True,
     },
     "agent": {
-        "max_tool_iterations": 0,
+        "max_tool_iterations": 200,
         "no_progress_repeat_limit": 8,
+        "rate_limit_retries": 4,
+        "rate_limit_backoff_seconds": 2,
     },
     "git": {
         "agent_branch_required": True,
@@ -110,11 +112,11 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 def user_config_path() -> Path:
-    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".pyagent" / "config.toml"
+    return Path(os.environ.get("USERPROFILE", str(Path.home()))) / ".buddy" / "config.toml"
 
 
 def project_config_path(project_root: Path) -> Path:
-    return project_root / ".pyagent" / "config.toml"
+    return project_root / ".buddy" / "config.toml"
 
 
 @dataclass(slots=True)
@@ -159,6 +161,12 @@ def validate_config(config: dict[str, Any]) -> None:
     no_progress_repeat_limit = config["agent"].get("no_progress_repeat_limit", 8)
     if not isinstance(no_progress_repeat_limit, int) or no_progress_repeat_limit <= 0:
         raise ConfigError("agent.no_progress_repeat_limit must be a positive integer")
+    rate_limit_retries = config["agent"].get("rate_limit_retries", 4)
+    if not isinstance(rate_limit_retries, int) or rate_limit_retries < 0:
+        raise ConfigError("agent.rate_limit_retries must be a non-negative integer")
+    rate_limit_backoff_seconds = config["agent"].get("rate_limit_backoff_seconds", 2)
+    if not isinstance(rate_limit_backoff_seconds, (int, float)) or rate_limit_backoff_seconds < 0:
+        raise ConfigError("agent.rate_limit_backoff_seconds must be a non-negative number")
 
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:

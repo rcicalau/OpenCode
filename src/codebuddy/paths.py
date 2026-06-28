@@ -11,8 +11,12 @@ from .errors import FileSafetyError
 DEFAULT_SENSITIVE_PATTERNS = [
     ".env",
     ".env.*",
-    ".pyagent",
-    ".pyagent/**",
+    ".buddy/cache/**",
+    ".buddy/index/**",
+    ".buddy/logs/**",
+    ".buddy/plans/**",
+    ".buddy/sessions/**",
+    ".buddy/workplans/**",
     "*.pem",
     "*.key",
     "id_rsa",
@@ -43,7 +47,7 @@ def find_project_root(start: Path | None = None) -> Path:
 def is_project_marker(path: Path) -> bool:
     return (
         (path / ".git").exists()
-        or (path / ".pyagent" / "config.toml").exists()
+        or (path / ".buddy" / "config.toml").exists()
         or (path / "SPEC.md").exists()
         or (path / "pyproject.toml").exists()
         or (path / "AGENTS.md").exists()

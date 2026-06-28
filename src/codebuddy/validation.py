@@ -87,7 +87,7 @@ class ValidationHarness:
             if " -> " in rel:
                 rel = rel.split(" -> ", 1)[1].strip()
             rel = rel.replace("\\", "/")
-            if rel.startswith((".git/", ".pyagent/")):
+            if rel.startswith((".git/", ".buddy/")):
                 continue
             changed.add(rel)
         return sorted(path for path in changed if path not in expected)

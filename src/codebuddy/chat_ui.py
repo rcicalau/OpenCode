@@ -119,6 +119,7 @@ class ChatRenderer:
         title = getattr(event, "title", "Tool")
         detail = getattr(event, "detail", "")
         status = getattr(event, "status", "done")
+        body = getattr(event, "body", "")
         style = {
             "context": "blue",
             "read": "cyan",
@@ -133,8 +134,12 @@ class ChatRenderer:
             prefix = self.text(f"{title:<8}", style=f"bold {style}")
             body_style = "red" if status == "failed" else "dim"
             self.console.print(prefix + self.text(str(detail), style=body_style))
+            if body:
+                self.console.print(str(body), style="dim")
         else:
             print(f"{title:<8}{detail}")
+            if body:
+                print(str(body))
 
     def assistant(self, message: str) -> None:
         if self.console:

@@ -22,7 +22,7 @@ From any project folder, call the repo launcher directly:
 C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd
 ```
 
-With no arguments, it starts chat and opens the folder picker at the folder you launched it from. With arguments, it runs a one-shot prompt using the same launch-folder default:
+With no arguments, it starts chat bound to the project you launched it from. With arguments, it runs a one-shot prompt using that same project root:
 
 ```cmd
 C:\Users\RaduC\Documents\OpenCode\run-buddy.cmd "what does this project do?"
@@ -46,10 +46,10 @@ Open a new `cmd.exe` window, then start Code Buddy from anywhere:
 buddy
 ```
 
-With no arguments, `buddy` starts chat mode, opens a native folder picker at the folder you launched it from, and stores that project's state in:
+With no arguments, `buddy` starts chat mode bound to the folder you launched it from, and stores that project's state in:
 
 ```text
-<project>\.pyagent\
+<project>\.buddy\
 ```
 
 You should not need to set `PYTHONPATH` manually.
@@ -67,23 +67,13 @@ Interactive chat uses a colorized terminal UI:
 
 Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default, using model `openai/gpt-5.4`.
 
-The repo includes setup templates:
+The repo includes a project config template:
 
 ```text
-examples\azure_auth_example.py
 examples\project_config.azure_openai.toml
-scripts\setup-azure-openai.ps1
 ```
 
-From the project you want Code Buddy to work on, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\RaduC\Documents\OpenCode\scripts\setup-azure-openai.ps1 -ProjectRoot .
-```
-
-This creates `<project>\.pyagent\config.toml` and points you at the bundled AI Mark hook. Edit `C:\Users\RaduC\Documents\OpenCode\src\codebuddy\ai_mart.py` and provide the real `auth_client` object and `base_url` used by your workspace.
-
-Code Buddy then loads `codebuddy.azure_auth:AzureAuthClient` from the OpenCode source tree. That class imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token` for every model request. The Azure provider imports the endpoint from `codebuddy.ai_mart:base_url`. The default provider config is:
+Code Buddy assumes your target project or `PYTHONPATH` provides `ai_mart.py` and `azure_auth.py`. The default Azure provider imports the endpoint from `ai_mart:base_url` and loads `azure_auth:AzureAuthClient`. The expected token method is `get_token()`, which can return either a string or an object with `.access_token`. The default provider config is:
 
 ```toml
 [model.roles.main]
@@ -91,32 +81,32 @@ provider = "azure_openai"
 model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
-base_url_import = "codebuddy.ai_mart:base_url"
-auth_client = "codebuddy.azure_auth:AzureAuthClient"
+base_url_import = "ai_mart:base_url"
+auth_client = "azure_auth:AzureAuthClient"
 token_method = "get_token"
 verify_ssl = false
 ```
 
-For development and provider smoke testing with Perplexity, set `PERPLEXITY_API_KEY` and configure the main provider as `perplexity` in `<project>\.pyagent\config.toml`.
+For development and provider smoke testing with Perplexity, set `PERPLEXITY_API_KEY` and configure the main provider as `perplexity` in `<project>\.buddy\config.toml`.
 
 ## Project Binding
 
 Code Buddy stores project-local state under the selected project root:
 
 ```text
-<project>\.pyagent\sessions\
-<project>\.pyagent\index\
-<project>\.pyagent\workplans\
-<project>\.pyagent\logs\
+<project>\.buddy\sessions\
+<project>\.buddy\index\
+<project>\.buddy\workplans\
+<project>\.buddy\logs\
 ```
 
 Each active session stores durable conversation history:
 
 ```text
-<project>\.pyagent\sessions\<session-id>\conversation.jsonl
-<project>\.pyagent\sessions\<session-id>\ledger.json
-<project>\.pyagent\sessions\<session-id>\journal.jsonl
-<project>\.pyagent\sessions\<session-id>\compacted_state.md
+<project>\.buddy\sessions\<session-id>\conversation.jsonl
+<project>\.buddy\sessions\<session-id>\ledger.json
+<project>\.buddy\sessions\<session-id>\journal.jsonl
+<project>\.buddy\sessions\<session-id>\compacted_state.md
 ```
 
 `conversation.jsonl` records each turn's user prompt, assistant response, visible tool/model events, changed files, mode, and timestamp. `/compact` summarizes both the transcript and the ledger into `compacted_state.md`. Future model calls include the compacted memory when it exists, or recent conversation turns when it does not.
@@ -124,21 +114,21 @@ Each active session stores durable conversation history:
 On launch, Code Buddy refreshes a project map at:
 
 ```text
-<project>\.pyagent\index\project_map.md
-<project>\.pyagent\index\project_memory.json
+<project>\.buddy\index\project_map.md
+<project>\.buddy\index\project_memory.json
 ```
 
-That map includes the project shape, key docs/manifests, source symbols where available, and the active session's objective, plan, pending next step, inspected files, edited files, commands, and blockers. Future launches reuse the same project-local `.pyagent` state.
+That map includes the project shape, key docs/manifests, source symbols where available, and the active session's objective, plan, pending next step, inspected files, edited files, commands, and blockers. Future launches reuse the same project-local `.buddy` state.
 
 The index also writes deterministic module summaries:
 
 ```text
-<project>\.pyagent\index\module_summaries.json
+<project>\.buddy\index\module_summaries.json
 ```
 
-Large execution objectives such as "document each file in the codebase" are split into durable work-plan slices under `.pyagent\workplans`. Each slice is validated, recorded in status, and can be resumed with `continue` or retried with `retry blocked`.
+Large execution objectives such as "document each file in the codebase" are split into durable work-plan slices under `.buddy\workplans`. Each slice is validated, recorded in status, and can be resumed with `continue` or retried with `retry blocked`.
 
-When you start it inside a git repo, or a folder with `.pyagent\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder is the default project root and the folder picker starts there. You can also bind it explicitly:
+When you start it inside a git repo, or a folder with `.buddy\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder is the project root. You can also bind it explicitly:
 
 ```cmd
 buddy --root C:\path\to\project chat
@@ -151,23 +141,22 @@ set CODEBUDDY_PROJECT_ROOT=C:\path\to\project
 buddy chat
 ```
 
-Each project gets its own `.pyagent` state, so opening Code Buddy in project A resumes project A, and opening it in project B resumes project B.
+Each project gets its own `.buddy` state, so opening Code Buddy in project A resumes project A, and opening it in project B resumes project B.
 
 ## Persistent API Keys
 
-API keys and Azure tokens are intentionally not stored in project `.pyagent\config.toml`, because project files can be committed or shared. By default, Code Buddy uses the bundled AI Mark auth hook:
-
-```text
-C:\Users\RaduC\Documents\OpenCode\src\codebuddy\ai_mart.py
-```
+API keys and Azure tokens are intentionally not stored in project `.buddy\config.toml`, because project files can be committed or shared. By default, Code Buddy expects this project-local or importable auth shape:
 
 ```python
+base_url = "https://your-endpoint/openai/v1"
+
 class AiMartAuthClient:
     def authenticate_broker(self):
         return broker_token_object
 
-auth_client = AiMartAuthClient()
-base_url = "https://your-endpoint/openai/v1"
+class AzureAuthClient:
+    def get_token(self):
+        return AiMartAuthClient().authenticate_broker().access_token
 ```
 
 `broker_token_object` must expose `.access_token`. `base_url` must be the OpenAI-compatible endpoint.
@@ -194,7 +183,7 @@ buddy auth check perplexity
 buddy doctor
 ```
 
-`auth status` checks whether Code Buddy can see the variable in the current process. `auth check` performs a small live provider call and distinguishes “variable missing” from “provider rejected the key.” If the provider returns HTTP 401 after `auth status` says the variable is set, regenerate the key, run `setx` again, and reopen the terminal.
+`auth status` checks whether Code Buddy can see the variable in the current process. `auth check` performs a small live provider call and distinguishes "variable missing" from "provider rejected the key." If the provider returns HTTP 401 after `auth status` says the variable is set, regenerate the key, run `setx` again, and reopen the terminal.
 
 ## Agent Loop
 

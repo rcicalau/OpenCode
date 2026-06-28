@@ -19,7 +19,7 @@ class GlobalStateTests(unittest.TestCase):
             set_last_project_root(project, home)
 
             self.assertEqual(get_last_project_root(home), project.resolve())
-            self.assertEqual(user_state_path(home), home / ".pyagent" / "state.json")
+            self.assertEqual(user_state_path(home), home / ".buddy" / "state.json")
 
 
 if __name__ == "__main__":

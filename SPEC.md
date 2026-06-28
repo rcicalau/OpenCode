@@ -35,15 +35,15 @@ Project binding requirements:
 - The Code Buddy implementation repo must never become the implicit target merely because the launcher lives there.
 - Runtime UI should display the active project root clearly.
 - Any attempt by the model or tool layer to read or mutate the Code Buddy source tree while the target project is different must be treated like outside-project access and require policy handling.
-- Project-local state lives under `<project>/.pyagent/`.
-- Conversation history lives under `<project>/.pyagent/sessions/<session-id>/conversation.jsonl`.
+- Project-local state lives under `<project>/.buddy/`.
+- Conversation history lives under `<project>/.buddy/sessions/<session-id>/conversation.jsonl`.
 - Context compaction must use the project-local conversation history, ledger, journal, work plans, and index.
 
 Authentication and provider requirements:
 
 - Deployment auth is always the Azure/AI Mark client shared with the workspace.
-- The deployment provider must import auth from `codebuddy.ai_mart`.
-- The deployment provider must import the endpoint/base URL from `codebuddy.ai_mart`; it must not require an endpoint URL system environment variable.
+- The deployment provider must import auth from `ai_mart`.
+- The deployment provider must import the endpoint/base URL from `ai_mart`; it must not require an endpoint URL system environment variable.
 - The required `ai_mart.py` contract is `auth_client.authenticate_broker().access_token` for the bearer token and `base_url` for the OpenAI-compatible endpoint.
 - The deployment model is `openai/gpt-5.4`.
 - Perplexity remains a development/test provider and may continue to use `PERPLEXITY_API_KEY`.
@@ -89,7 +89,7 @@ Editing requirements:
 - Terminal-first CLI/TUI.
 - Multiline input, bracketed paste support, history, and `$EDITOR` fallback.
 - Provider-neutral LLM layer with deployment default `azure_openai/openai/gpt-5.4`.
-- Deployment auth and endpoint loaded from `codebuddy.ai_mart`.
+- Deployment auth and endpoint loaded from `ai_mart`.
 - OpenAI-compatible API adapters for OpenAI and Perplexity.
 - Native tool/function-call support when available.
 - Structured text tool-call fallback when native tool calls are unavailable.
@@ -191,12 +191,12 @@ Project root selection order:
 3. Process launch directory.
 4. Last-used project only when the launch directory is unavailable or invalid.
 
-The selected project root owns its `.pyagent` state. The Code Buddy source repo is not the target project unless the user explicitly selects it.
+The selected project root owns its `.buddy` state. The Code Buddy source repo is not the target project unless the user explicitly selects it.
 
 On every interactive spawn or one-shot prompt execution, Code Buddy must refresh a bounded project map before the user asks the first question. The map must be stored under the project root, not globally:
 
-- `.pyagent/index/project_map.md`
-- `.pyagent/index/project_memory.json`
+- `.buddy/index/project_map.md`
+- `.buddy/index/project_memory.json`
 
 The project map must include:
 
@@ -206,7 +206,7 @@ The project map must include:
 - File map with sensitive paths excluded.
 - Key documentation and manifest snippets such as `README.md`, `AGENTS.md`, `SPEC.md`, `pyproject.toml`, and equivalent files.
 - Source symbols where cheap deterministic extraction is available.
-- Deterministic module summaries persisted to `.pyagent/index/module_summaries.json`.
+- Deterministic module summaries persisted to `.buddy/index/module_summaries.json`.
 
 The first model call in a project-aware turn must receive this project context. The agent must not answer project questions from generic prior knowledge when local context is available.
 
@@ -410,9 +410,9 @@ Default deployment provider:
 - Provider: `azure_openai`
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
-- Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
-- Default AI Mark bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token`
-- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `codebuddy.ai_mart`
+- Auth style: external `azure_auth:AzureAuthClient` token provider
+- Default AI Mark bridge: `azure_auth` imports `auth_client` from `ai_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `ai_mart`
 - Deployment default must not require `AZURE_OPENAI_BASE_URL`
 
 Development/test provider:
@@ -635,7 +635,7 @@ Every mutating action must write to an append-only session journal.
 Suggested location:
 
 ```text
-.pyagent/sessions/<session-id>/journal.jsonl
+.buddy/sessions/<session-id>/journal.jsonl
 ```
 
 Journal entries should include:
@@ -811,7 +811,7 @@ Behavior:
 
 ### 25.2 System-Maintained Memory
 
-Stored under `.pyagent/`.
+Stored under `.buddy/`.
 
 Contains:
 
@@ -832,7 +832,7 @@ Recommended project layout:
 
 ```text
 AGENTS.md
-.pyagent/
+.buddy/
   config.toml
   sessions/
     current.json
@@ -853,16 +853,16 @@ AGENTS.md
 Recommended global config:
 
 ```text
-%USERPROFILE%\.pyagent\config.toml
+%USERPROFILE%\.buddy\config.toml
 ```
 
 Git hygiene:
 
-- `.pyagent/config.toml` may be committed if project-safe.
-- `.pyagent/sessions/` should be ignored.
-- `.pyagent/index/` should be ignored.
-- `.pyagent/cache/` should be ignored.
-- `.pyagent/logs/` should be ignored.
+- `.buddy/config.toml` may be committed if project-safe.
+- `.buddy/sessions/` should be ignored.
+- `.buddy/index/` should be ignored.
+- `.buddy/cache/` should be ignored.
+- `.buddy/logs/` should be ignored.
 - Code Buddy may suggest `.gitignore` entries, but should not change `.gitignore` without approval unless explicitly asked.
 
 ## 27. Local Logging And Privacy
@@ -987,18 +987,18 @@ The harness controls model behavior, tools, command policy, validation, git beha
 
 Config files:
 
-- Global: `%USERPROFILE%\.pyagent\config.toml`
-- Project: `.pyagent/config.toml`
+- Global: `%USERPROFILE%\.buddy\config.toml`
+- Project: `.buddy/config.toml`
 
 Project config overrides or narrows global config. Config should not contain secrets directly. For development and testing, API keys should come from persistent Windows user environment variables.
 
 Deployment credential requirements:
 
 - Azure/AI Mark deployment auth is not configured through system environment variables in v1.
-- The provider imports `auth_client` and `base_url` from `codebuddy.ai_mart`.
+- The provider imports `auth_client` and `base_url` from `ai_mart`.
 - `auth_client.authenticate_broker().access_token` is called for the bearer token.
 - `base_url` is used as the OpenAI-compatible endpoint.
-- `codebuddy doctor` must verify that `codebuddy.ai_mart` is importable, exposes the required names, and can return a token without printing secrets.
+- `codebuddy doctor` must verify that `ai_mart` is importable, exposes the required names, and can return a token without printing secrets.
 
 Development/test credential requirements:
 
@@ -1021,8 +1021,8 @@ provider = "azure_openai"
 model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
-base_url_import = "codebuddy.ai_mart:base_url"
-auth_client = "codebuddy.azure_auth:AzureAuthClient"
+base_url_import = "ai_mart:base_url"
+auth_client = "azure_auth:AzureAuthClient"
 token_method = "get_token"
 model = "openai/gpt-5.4"
 verify_ssl = false
@@ -1354,7 +1354,7 @@ Required onboarding requirements:
 - Detect missing `git`, `rg`, formatter, and test tools with actionable messages.
 - Detect missing API credentials.
 - Create global config on first run only after user approval.
-- Create project `.pyagent/config.toml` only when requested or approved.
+- Create project `.buddy/config.toml` only when requested or approved.
 - Explain where local state is stored.
 - Provide upgrade and uninstall instructions.
 
@@ -1382,9 +1382,9 @@ Deployment default:
 - Provider: `azure_openai`
 - Model: `openai/gpt-5.4`
 - API style: OpenAI-compatible
-- Auth style: bundled `codebuddy.azure_auth:AzureAuthClient` token provider
-- Default AI Mark bridge: `codebuddy.azure_auth` imports `auth_client` from `codebuddy.ai_mart` and returns `auth_client.authenticate_broker().access_token`
-- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `codebuddy.ai_mart`
+- Auth style: external `azure_auth:AzureAuthClient` token provider
+- Default AI Mark bridge: `azure_auth` imports `auth_client` from `ai_mart` and returns `auth_client.authenticate_broker().access_token`
+- Default endpoint bridge: the Azure/OpenAI provider imports `base_url` from `ai_mart`
 - No endpoint URL environment variable is required for the deployment default
 
 Development/test default:
@@ -1395,7 +1395,7 @@ Development/test default:
 
 Provider items to verify before MVP:
 
-- Exact `codebuddy.ai_mart` export names.
+- Exact `ai_mart` export names.
 - Request schema compatibility.
 - Streaming behavior.
 - Native tool-call behavior.
@@ -1626,8 +1626,8 @@ Potential post-v1 work:
 
 The current prototype must be brought into compliance with the refined requirements before it can be treated as production-ready. These are explicit implementation and test targets:
 
-- Rename or bridge the bundled AI Mark module to `codebuddy.ai_mart`; remove deployment dependence on `AZURE_OPENAI_BASE_URL`.
-- Import both deployment auth and deployment endpoint/base URL from `codebuddy.ai_mart`.
+- Rename or bridge the external AI Mark module to `ai_mart`; remove deployment dependence on `AZURE_OPENAI_BASE_URL`.
+- Import both deployment auth and deployment endpoint/base URL from `ai_mart`.
 - Ensure no-install and installed launch paths both preserve the user's launch directory as the default target project.
 - Ensure folder picker initial directory is the launch directory, not the Code Buddy source repo and not an old remembered project.
 - Ensure every runtime tool receives and enforces the selected project root.
@@ -1639,7 +1639,7 @@ The current prototype must be brought into compliance with the refined requireme
 - Add timeouts and progress events for model calls, command execution, git operations, indexing, validation, and tool loops.
 - Prove streaming works for ordinary assistant text and does not leave the UI stuck on `Thinking...`.
 - Verify successful edit objectives by checking expected file diffs before reporting success.
-- Keep conversation history, ledger, journal, work plans, compaction summaries, and project indexes under the selected project's `.pyagent` directory.
+- Keep conversation history, ledger, journal, work plans, compaction summaries, and project indexes under the selected project's `.buddy` directory.
 
 ## 49. Open Questions
 
@@ -1649,5 +1649,5 @@ These can be resolved during implementation:
 - Preferred default keybindings.
 - Whether auto checkpoint commits are enabled by default or merely strongly recommended.
 - Exact branch prefix: `codebuddy/`, `agent/`, or another value.
-- Whether project-safe `.pyagent/config.toml` should be committed by default or only suggested.
+- Whether project-safe `.buddy/config.toml` should be committed by default or only suggested.
 - How much of the project index should be human-readable versus optimized internal data.

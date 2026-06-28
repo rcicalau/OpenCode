@@ -72,9 +72,9 @@ class WorkPlanManager:
         self.project_root = project_root.resolve()
         self.session_id = session_id
         self.policy = policy
-        self.base_dir = self.project_root / ".pyagent" / "workplans"
+        self.base_dir = self.project_root / ".buddy" / "workplans"
         self.current_path = self.base_dir / "current.json"
-        self.active_plan_path = self.project_root / ".pyagent" / "plans" / "active.json"
+        self.active_plan_path = self.project_root / ".buddy" / "plans" / "active.json"
 
     def load_current(self) -> WorkPlan | None:
         if not self.current_path.exists():
@@ -198,7 +198,7 @@ class WorkPlanManager:
         for path in self.project_root.rglob("*"):
             if not path.is_file() or path.suffix.lower() not in CODE_SUFFIXES:
                 continue
-            if any(part in {".git", ".pyagent", "__pycache__", ".venv", "venv", "node_modules"} for part in path.relative_to(self.project_root).parts):
+            if any(part in {".git", ".buddy", "__pycache__", ".venv", "venv", "node_modules"} for part in path.relative_to(self.project_root).parts):
                 continue
             try:
                 if self.policy.is_sensitive(path):

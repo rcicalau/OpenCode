@@ -48,7 +48,7 @@ class SessionLedger:
 class SessionManager:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root.resolve()
-        self.base_dir = self.project_root / ".pyagent" / "sessions"
+        self.base_dir = self.project_root / ".buddy" / "sessions"
         self.current_file = self.base_dir / "current.json"
 
     def load_or_create(self, new: bool = False) -> SessionLedger:

@@ -15,7 +15,7 @@ from .textfile import is_probably_binary_file, read_limited_text_bytes
 
 IGNORED_PARTS = {
     ".git",
-    ".pyagent",
+    ".buddy",
     "__pycache__",
     ".pytest_cache",
     ".mypy_cache",
@@ -82,7 +82,7 @@ def bootstrap_project_memory(project_root: Path, ledger: SessionLedger, policy: 
 
 
 def project_memory_paths(project_root: Path) -> tuple[Path, Path]:
-    index_dir = project_root.resolve() / ".pyagent" / "index"
+    index_dir = project_root.resolve() / ".buddy" / "index"
     return index_dir / "project_map.md", index_dir / "project_memory.json"
 
 
@@ -177,7 +177,7 @@ def _session_section(ledger: SessionLedger | None) -> str:
 def _conversation_memory_section(root: Path, ledger: SessionLedger | None) -> str:
     if ledger is None:
         return ""
-    return load_session_memory(root / ".pyagent" / "sessions" / ledger.session_id)
+    return load_session_memory(root / ".buddy" / "sessions" / ledger.session_id)
 
 
 def _list_project_files(root: Path, policy: PathPolicy, max_files: int = 500) -> list[str]:
@@ -197,7 +197,7 @@ def _list_with_rg(root: Path, policy: PathPolicy, max_files: int) -> list[str]:
                 "--glob",
                 "!.git/**",
                 "--glob",
-                "!.pyagent/**",
+                "!.buddy/**",
                 "--glob",
                 "!__pycache__/**",
                 "--glob",

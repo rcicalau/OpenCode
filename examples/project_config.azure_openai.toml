@@ -10,8 +10,8 @@ provider = "azure_openai"
 model = "openai/gpt-5.4"
 
 [model.providers.azure_openai]
-base_url_import = "codebuddy.ai_mart:base_url"
-auth_client = "codebuddy.azure_auth:AzureAuthClient"
+base_url_import = "ai_mart:base_url"
+auth_client = "azure_auth:AzureAuthClient"
 token_method = "get_token"
 model = "openai/gpt-5.4"
 verify_ssl = false

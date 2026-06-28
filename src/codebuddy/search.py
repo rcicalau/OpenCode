@@ -37,7 +37,7 @@ class Searcher:
                     "--glob",
                     "!.git/**",
                     "--glob",
-                    "!.pyagent/**",
+                    "!.buddy/**",
                     "--",
                     pattern,
                     ".",
@@ -79,7 +79,7 @@ class Searcher:
     def _fallback_search(self, pattern: str, max_matches: int) -> list[SearchMatch]:
         matches: list[SearchMatch] = []
         for path in self.policy.root.rglob("*"):
-            if not path.is_file() or ".git" in path.parts or ".pyagent" in path.parts:
+            if not path.is_file() or ".git" in path.parts or ".buddy" in path.parts:
                 continue
             if self.policy.is_sensitive(path):
                 continue

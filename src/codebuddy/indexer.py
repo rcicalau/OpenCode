@@ -36,7 +36,7 @@ class Indexer:
     def __init__(self, project_root: Path, policy: PathPolicy | None = None) -> None:
         self.project_root = project_root.resolve()
         self.policy = policy or PathPolicy(self.project_root)
-        self.index_dir = self.project_root / ".pyagent" / "index"
+        self.index_dir = self.project_root / ".buddy" / "index"
 
     def build(self) -> ProjectIndex:
         records: list[FileRecord] = []
@@ -58,7 +58,7 @@ class Indexer:
         (self.index_dir / "symbols.json").write_text(json.dumps([asdict(item) for item in index.symbols], indent=2), encoding="utf-8")
 
     def _iter_files(self):
-        ignored = {".git", ".pyagent", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv"}
+        ignored = {".git", ".buddy", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv"}
         for path in self.project_root.rglob("*"):
             if not path.is_file():
                 continue

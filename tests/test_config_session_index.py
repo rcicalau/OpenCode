@@ -40,7 +40,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
     def test_project_config_overrides_global_config(self) -> None:
         global_config = self.root / "global.toml"
         global_config.write_text("[commands]\ndefault_timeout_seconds = 5\n", encoding="utf-8")
-        project_config = self.root / ".pyagent" / "config.toml"
+        project_config = self.root / ".buddy" / "config.toml"
         project_config.parent.mkdir(parents=True)
         project_config.write_text("[commands]\ndefault_timeout_seconds = 9\n", encoding="utf-8")
 
@@ -55,9 +55,9 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(loaded.config["model"]["roles"]["main"]["provider"], "azure_openai")
         self.assertEqual(loaded.config["model"]["roles"]["main"]["model"], "openai/gpt-5.4")
         provider = loaded.config["model"]["providers"]["azure_openai"]
-        self.assertEqual(provider["base_url_import"], "codebuddy.ai_mart:base_url")
+        self.assertEqual(provider["base_url_import"], "ai_mart:base_url")
         self.assertNotIn("base_url_env", provider)
-        self.assertEqual(provider["auth_client"], "codebuddy.azure_auth:AzureAuthClient")
+        self.assertEqual(provider["auth_client"], "azure_auth:AzureAuthClient")
         self.assertEqual(provider["token_method"], "get_token")
         self.assertFalse(provider["verify_ssl"])
 
@@ -69,10 +69,10 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(provider["endpoint_path"], "/chat/completions")
         self.assertEqual(provider["api_key_env"], "PERPLEXITY_API_KEY")
 
-    def test_project_root_detection_honors_pyagent_config(self) -> None:
+    def test_project_root_detection_honors_buddy_config(self) -> None:
         project = self.root / "project"
         project.mkdir()
-        config = project / ".pyagent" / "config.toml"
+        config = project / ".buddy" / "config.toml"
         config.parent.mkdir()
         config.write_text("# config\n", encoding="utf-8")
 
@@ -121,7 +121,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
         ledger = SessionManager(source).load_or_create()
         ledger.objective = "source work"
         SessionManager(source).save(ledger)
-        shutil.copytree(source / ".pyagent", target / ".pyagent")
+        shutil.copytree(source / ".buddy", target / ".buddy")
 
         with self.assertRaises(SessionRootMismatch):
             SessionManager(target).load_or_create()
@@ -131,7 +131,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
 
         self.assertEqual(session.root, self.root.resolve())
         self.assertEqual(Path(session.ledger.project_root), self.root.resolve())
-        self.assertEqual(session.journal.path.parent, self.root / ".pyagent" / "sessions" / session.ledger.session_id)
+        self.assertEqual(session.journal.path.parent, self.root / ".buddy" / "sessions" / session.ledger.session_id)
 
     def test_compaction_preserves_plan_and_working_set(self) -> None:
         manager = SessionManager(self.root)
@@ -142,7 +142,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
         ledger.files_inspected.append("src/app.py")
         ledger.files_edited.append("tests/test_app.py")
 
-        content = compact_ledger(ledger, self.root / ".pyagent" / "sessions" / ledger.session_id / "compacted_state.md")
+        content = compact_ledger(ledger, self.root / ".buddy" / "sessions" / ledger.session_id / "compacted_state.md")
 
         self.assertIn("add tests", content)
         self.assertIn("[completed] find code", content)
@@ -156,7 +156,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
 
         self.assertEqual([file.path for file in index.files], ["pkg.py"])
         self.assertEqual({symbol.name for symbol in index.symbols}, {"A", "f"})
-        stored = json.loads((self.root / ".pyagent" / "index" / "symbols.json").read_text(encoding="utf-8"))
+        stored = json.loads((self.root / ".buddy" / "index" / "symbols.json").read_text(encoding="utf-8"))
         self.assertEqual({item["name"] for item in stored}, {"A", "f"})
 
     def test_indexer_skips_sensitive_files(self) -> None:
@@ -184,9 +184,9 @@ class ConfigSessionIndexTests(unittest.TestCase):
 
         context = bootstrap_project_memory(self.root, ledger)
 
-        map_path = self.root / ".pyagent" / "index" / "project_map.md"
-        metadata_path = self.root / ".pyagent" / "index" / "project_memory.json"
-        modules_path = self.root / ".pyagent" / "index" / "module_summaries.json"
+        map_path = self.root / ".buddy" / "index" / "project_map.md"
+        metadata_path = self.root / ".buddy" / "index" / "project_memory.json"
+        modules_path = self.root / ".buddy" / "index" / "module_summaries.json"
         self.assertTrue(map_path.exists())
         self.assertTrue(metadata_path.exists())
         self.assertTrue(modules_path.exists())
@@ -215,6 +215,10 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertTrue((self.root / ".buddy" / "templates").is_dir())
         self.assertTrue((self.root / ".buddy" / "validators").is_dir())
         self.assertTrue((self.root / ".buddy" / "tools").is_dir())
+        self.assertTrue((self.root / ".buddy" / "skills" / "reasoning.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "development.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "testing.md").exists())
+        self.assertTrue((self.root / ".buddy" / "skills" / "debugging.md").exists())
 
     def test_project_context_includes_buddy_md_and_skills(self) -> None:
         ensure_buddy_scaffold(self.root)

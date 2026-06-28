@@ -8,7 +8,7 @@ from typing import Any
 
 def user_state_path(home: Path | None = None) -> Path:
     base = home or Path(os.environ.get("USERPROFILE", str(Path.home())))
-    return base / ".pyagent" / "state.json"
+    return base / ".buddy" / "state.json"
 
 
 def load_user_state(home: Path | None = None) -> dict[str, Any]:

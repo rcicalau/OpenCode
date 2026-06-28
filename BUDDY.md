@@ -5,12 +5,12 @@ Code Buddy is a Windows-first Python coding agent. Runtime behavior must stay pr
 ## Engineering Rules
 - Use Python only for the agent runtime.
 - Keep edits brokered, journaled, validated, and reversible where practical.
-- Prefer project-local state under `.pyagent/`.
+- Prefer project-local state under `.buddy/`.
 - Prefer reusable project skills under `.buddy/skills/`.
 - Do not add Node.js dependencies.
 
 ## Validation
-- Run `py -3.12 -m unittest discover -s tests` before claiming production readiness.
+- Run `python -m unittest discover -s tests` before claiming production readiness.
 - Add focused regression tests for every fixed bug.
 
 ## Safety

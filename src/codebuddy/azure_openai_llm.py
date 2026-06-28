@@ -10,7 +10,7 @@ from .llm import LLMResponse, Message
 from .tool_calls import parse_native_tool_calls
 
 
-DEFAULT_AUTH_CLIENT = "codebuddy.azure_auth:AzureAuthClient"
+DEFAULT_AUTH_CLIENT = "azure_auth:AzureAuthClient"
 DEFAULT_TOKEN_METHOD = "get_token"
 
 
@@ -121,7 +121,7 @@ def load_auth_token(
     if not callable(method):
         raise ConfigError(f"auth client {auth_client_path} has no callable {token_method} method")
     raw_token = method()
-    token_value = getattr(raw_token, "token", raw_token)
+    token_value = getattr(raw_token, "access_token", getattr(raw_token, "token", raw_token))
     if not token_value:
         raise ConfigError(f"auth client {auth_client_path}.{token_method} returned an empty token")
     return AuthToken(str(token_value), auth_client)
@@ -133,7 +133,10 @@ def load_import_value(import_path: str, project_root: Path | None = None) -> Any
     if module_file and module_file.exists():
         module = _load_module_from_file(module_name, module_file)
     else:
-        module = importlib.import_module(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            raise ConfigError(f"could not import {module_name!r} for {import_path}: {exc}") from exc
     if not hasattr(module, value_name):
         raise ConfigError(f"import value not found: {import_path}")
     return getattr(module, value_name)
@@ -145,7 +148,10 @@ def _load_auth_client(auth_client_path: str, project_root: Path | None) -> Any:
     if auth_file and auth_file.exists():
         module = _load_module_from_file(module_name, auth_file)
     else:
-        module = importlib.import_module(module_name)
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            raise ConfigError(f"could not import auth client module {module_name!r}: {exc}") from exc
     auth_class = getattr(module, class_name, None)
     if auth_class is None:
         raise ConfigError(f"auth client class not found: {auth_client_path}")

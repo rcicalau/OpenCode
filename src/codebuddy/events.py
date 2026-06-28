@@ -9,3 +9,4 @@ class AgentEvent:
     title: str
     detail: str = ""
     status: str = "done"
+    body: str = ""

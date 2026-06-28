@@ -39,6 +39,7 @@ flow for each user prompt.
 """
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -173,9 +174,11 @@ class CodeBuddyAgent:
         searcher: Searcher | None = None,
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
-        max_tool_iterations: int | None = None,
+        max_tool_iterations: int | None = 200,
         no_progress_repeat_limit: int = 8,
         model_timeout_seconds: float = 75,
+        rate_limit_retries: int = 4,
+        rate_limit_backoff_seconds: float = 2,
     ) -> None:
         self.project_root = project_root
         self.ledger = ledger
@@ -195,6 +198,12 @@ class CodeBuddyAgent:
         if model_timeout_seconds <= 0:
             raise ValueError("model_timeout_seconds must be positive")
         self.model_timeout_seconds = float(model_timeout_seconds)
+        if rate_limit_retries < 0:
+            raise ValueError("rate_limit_retries must be non-negative")
+        if rate_limit_backoff_seconds < 0:
+            raise ValueError("rate_limit_backoff_seconds must be non-negative")
+        self.rate_limit_retries = rate_limit_retries
+        self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
         self.tool_runtime = ToolRuntime(
             self.project_root,
             self.ledger,
@@ -288,7 +297,7 @@ class CodeBuddyAgent:
                 events.append(AgentEvent("model", "Model", label, "running"))
             iteration += 1
             try:
-                response = self._complete_model(messages, tool_schemas)
+                response = self._complete_model(messages, tool_schemas, events)
             except CodeBuddyError as exc:
                 self.ledger.objective_state = BLOCKED
                 events.append(AgentEvent("model", "Model", str(exc), "failed"))
@@ -354,7 +363,22 @@ class CodeBuddyAgent:
             events.append(AgentEvent("tool", "Loop", f"stopped after {self.max_tool_iterations} tool iterations", "failed"))
         return message
 
-    def _complete_model(self, messages: list[Message], tool_schemas: list[dict]):
+    def _complete_model(self, messages: list[Message], tool_schemas: list[dict], events: list[AgentEvent] | None = None):
+        attempts = self.rate_limit_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._complete_model_once(messages, tool_schemas)
+            except CodeBuddyError as exc:
+                if attempt >= attempts or not _is_rate_limit_error(exc):
+                    raise
+                delay = self.rate_limit_backoff_seconds * attempt
+                if events is not None:
+                    events.append(AgentEvent("model", "Model", f"rate limited; retry {attempt}/{self.rate_limit_retries} in {delay:g}s", "running"))
+                if delay:
+                    time.sleep(delay)
+        raise CodeBuddyError("model request failed after retries")
+
+    def _complete_model_once(self, messages: list[Message], tool_schemas: list[dict]):
         result_queue: Queue = Queue(maxsize=1)
 
         def run_request() -> None:
@@ -478,6 +502,8 @@ class CodeBuddyAgent:
         try:
             if self.git_manager.checkpoint_commit(f"Code Buddy slice: {item.label}", changed_now):
                 events.append(AgentEvent("git", "Git", f"checkpoint committed {item.label}"))
+                if self.git_manager.push_current_branch("origin"):
+                    events.append(AgentEvent("git", "Git", "pushed checkpoint to origin"))
         except Exception as exc:
             events.append(AgentEvent("git", "Git", f"checkpoint skipped: {exc}", "failed"))
 
@@ -594,3 +620,8 @@ def _recovery_playbook(results: list[ToolResult]) -> str:
     if not lines:
         return ""
     return "\n\nRecovery playbook:\n" + "\n".join(lines)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in ["429", "rate limit", "rate_limit", "too many requests", "quota exceeded", "request limit"])

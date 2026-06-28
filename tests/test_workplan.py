@@ -29,15 +29,15 @@ class WorkPlanTests(unittest.TestCase):
 
         self.assertIsNotNone(plan)
         self.assertEqual([item.target_path for item in plan.items], ["a.py", "b.py"])
-        self.assertTrue((self.root / ".pyagent" / "workplans" / "current.json").exists())
-        saved = json.loads((self.root / ".pyagent" / "workplans" / "current.json").read_text(encoding="utf-8"))
+        self.assertTrue((self.root / ".buddy" / "workplans" / "current.json").exists())
+        saved = json.loads((self.root / ".buddy" / "workplans" / "current.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["kind"], "document_codebase")
 
     def test_workplan_persists_resumable_execution_contract(self) -> None:
         plan = self.manager.active_or_new("Document each file in the codebase")
 
         self.assertIsNotNone(plan)
-        active = self.root / ".pyagent" / "plans" / "active.json"
+        active = self.root / ".buddy" / "plans" / "active.json"
         self.assertTrue(active.exists())
         saved = json.loads(active.read_text(encoding="utf-8"))
         self.assertEqual(saved["objective"], "Document each file in the codebase")
@@ -98,7 +98,7 @@ class WorkPlanTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
 
-        self.assertIn(".pyagent/workplans/", gitignore)
+        self.assertIn(".buddy/workplans/", gitignore)
 
 
 if __name__ == "__main__":

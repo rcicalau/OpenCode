@@ -116,8 +116,8 @@ class CliLlmAgentGitTests(unittest.TestCase):
 
         self.assertEqual(main(["--root", str(project), "status"]), 0)
 
-        self.assertTrue((project / ".pyagent" / "sessions" / "current.json").exists())
-        self.assertFalse((self.root / ".pyagent" / "sessions" / "current.json").exists())
+        self.assertTrue((project / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((self.root / ".buddy" / "sessions" / "current.json").exists())
 
     def test_prompt_bootstraps_project_memory_for_future_launches(self) -> None:
         project = Path(self.tmp.name) / "mapped-project"
@@ -131,7 +131,7 @@ class CliLlmAgentGitTests(unittest.TestCase):
         finally:
             os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
 
-        project_map = project / ".pyagent" / "index" / "project_map.md"
+        project_map = project / ".buddy" / "index" / "project_map.md"
         self.assertTrue(project_map.exists())
         self.assertIn("Mapped Project", project_map.read_text(encoding="utf-8"))
 
@@ -148,7 +148,7 @@ class CliLlmAgentGitTests(unittest.TestCase):
             else:
                 os.environ["CODEBUDDY_PROJECT_ROOT"] = old
 
-        self.assertTrue((project / ".pyagent" / "sessions" / "current.json").exists())
+        self.assertTrue((project / ".buddy" / "sessions" / "current.json").exists())
 
     def test_start_dir_env_is_used_as_root_resolution_start(self) -> None:
         install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
@@ -222,53 +222,21 @@ class CliLlmAgentGitTests(unittest.TestCase):
             os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
 
         self.assertIn("configured project answer", stdout.getvalue())
-        self.assertTrue((self.root / ".pyagent" / "sessions" / "current.json").exists())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
 
-    def test_folder_picker_selection_is_remembered_for_launch_location(self) -> None:
+    def test_interactive_prompt_binds_to_spawned_project_without_folder_picker(self) -> None:
         import codebuddy.cli as cli_module
 
-        selected = Path(self.tmp.name) / "remembered-target"
         original_picker = cli_module.open_native_folder_picker
         original_stdin = sys.stdin
-        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "remembered project answer"
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "spawned project answer"
         os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
 
         class TtyStdin:
             def isatty(self):
                 return True
 
-        cli_module.open_native_folder_picker = lambda _initial: selected
-        sys.stdin = TtyStdin()
-        try:
-            with redirect_stdout(StringIO()):
-                self.assertEqual(main(["What", "is", "here?"]), 0)
-            cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open again"))
-            stdout = StringIO()
-            with redirect_stdout(stdout):
-                self.assertEqual(main(["What", "is", "here?"]), 0)
-        finally:
-            cli_module.open_native_folder_picker = original_picker
-            sys.stdin = original_stdin
-            os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
-            os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
-
-        self.assertIn("remembered project answer", stdout.getvalue())
-        self.assertTrue((selected / ".pyagent" / "sessions" / "current.json").exists())
-
-    def test_one_shot_prompt_uses_folder_picker_when_interactive_and_markerless(self) -> None:
-        import codebuddy.cli as cli_module
-
-        selected = Path(self.tmp.name) / "picked-one-shot"
-        original_picker = cli_module.open_native_folder_picker
-        original_stdin = sys.stdin
-        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "selected project answer"
-        os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
-
-        class TtyStdin:
-            def isatty(self):
-                return True
-
-        cli_module.open_native_folder_picker = lambda _initial: selected
+        cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open"))
         sys.stdin = TtyStdin()
         try:
             stdout = StringIO()
@@ -280,24 +248,27 @@ class CliLlmAgentGitTests(unittest.TestCase):
             os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
             os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
 
-        self.assertTrue((selected / ".pyagent" / "sessions" / "current.json").exists())
-        self.assertFalse((self.root / ".pyagent" / "sessions" / "current.json").exists())
+        self.assertIn("spawned project answer", stdout.getvalue())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
 
-    def test_interactive_prompt_uses_folder_picker_even_when_cwd_is_a_project(self) -> None:
+    def test_interactive_prompt_ignores_stale_launch_binding(self) -> None:
         import codebuddy.cli as cli_module
 
-        (self.root / "pyproject.toml").write_text("[project]\nname='wrong-root'\n", encoding="utf-8")
-        selected = Path(self.tmp.name) / "picked-real-target"
+        stale = Path(self.tmp.name) / "stale-target"
+        stale.mkdir()
+        from codebuddy.global_state import set_project_binding
+
+        set_project_binding(self.root, stale)
         original_picker = cli_module.open_native_folder_picker
         original_stdin = sys.stdin
-        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "selected project answer"
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "local project answer"
         os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
 
         class TtyStdin:
             def isatty(self):
                 return True
 
-        cli_module.open_native_folder_picker = lambda _initial: selected
+        cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open"))
         sys.stdin = TtyStdin()
         try:
             stdout = StringIO()
@@ -309,17 +280,43 @@ class CliLlmAgentGitTests(unittest.TestCase):
             os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
             os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
 
-        self.assertTrue((selected / ".pyagent" / "sessions" / "current.json").exists())
-        self.assertFalse((self.root / ".pyagent" / "sessions" / "current.json").exists())
+        self.assertIn("local project answer", stdout.getvalue())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((stale / ".buddy" / "sessions" / "current.json").exists())
 
-    def test_interactive_edit_objective_writes_selected_project_not_cwd_project(self) -> None:
+    def test_interactive_prompt_uses_cwd_project_when_cwd_is_a_project(self) -> None:
         import codebuddy.cli as cli_module
 
-        (self.root / "pyproject.toml").write_text("[project]\nname='wrong-root'\n", encoding="utf-8")
-        (self.root / "agent.py").write_text("def handle():\n    return 'wrong'\n", encoding="utf-8")
-        selected = Path(self.tmp.name) / "picked-edit-target"
-        selected.mkdir()
-        (selected / "agent.py").write_text("def handle():\n    return 'target'\n", encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname='right-root'\n", encoding="utf-8")
+        original_picker = cli_module.open_native_folder_picker
+        original_stdin = sys.stdin
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "cwd project answer"
+        os.environ["CODEBUDDY_ALLOW_TEST_FOLDER_PICKER"] = "1"
+
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+        cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open"))
+        sys.stdin = TtyStdin()
+        try:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["What", "is", "here?"]), 0)
+        finally:
+            cli_module.open_native_folder_picker = original_picker
+            sys.stdin = original_stdin
+            os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
+            os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
+
+        self.assertIn("cwd project answer", stdout.getvalue())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
+
+    def test_interactive_edit_objective_writes_spawned_project(self) -> None:
+        import codebuddy.cli as cli_module
+
+        (self.root / "pyproject.toml").write_text("[project]\nname='target-root'\n", encoding="utf-8")
+        (self.root / "agent.py").write_text("def handle():\n    return 'target'\n", encoding="utf-8")
         original_picker = cli_module.open_native_folder_picker
         original_stdin = sys.stdin
         original_build_llm = cli_module.build_llm_client
@@ -340,7 +337,7 @@ def handle():
     return 'target'
 </new>
 </codebuddy_replace>"""
-        cli_module.open_native_folder_picker = lambda _initial: selected
+        cli_module.open_native_folder_picker = lambda _initial: (_ for _ in ()).throw(AssertionError("picker should not open"))
         cli_module.build_llm_client = lambda _config: FakeLLMClient([raw_edit, "Documented selected agent.py."])
         sys.stdin = TtyStdin()
         try:
@@ -352,8 +349,7 @@ def handle():
             sys.stdin = original_stdin
             os.environ.pop("CODEBUDDY_ALLOW_TEST_FOLDER_PICKER", None)
 
-        self.assertIn('"""Return the target project value."""', (selected / "agent.py").read_text(encoding="utf-8"))
-        self.assertEqual((self.root / "agent.py").read_text(encoding="utf-8"), "def handle():\n    return 'wrong'\n")
+        self.assertIn('"""Return the target project value."""', (self.root / "agent.py").read_text(encoding="utf-8"))
 
     def test_folder_picker_is_disabled_under_unittest_without_explicit_allow(self) -> None:
         import codebuddy.cli as cli_module
@@ -370,7 +366,7 @@ def handle():
         self.assertEqual(result, self.root.resolve())
 
     def test_doctor_checks_provider_key_and_base_url(self) -> None:
-        config = self.root / ".pyagent" / "config.toml"
+        config = self.root / ".buddy" / "config.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
             """
@@ -393,28 +389,21 @@ model = "sonar-pro"
         self.assertIn('"api_key": "set"', stdout.getvalue())
         self.assertIn('"base_url": "set"', stdout.getvalue())
 
-    def test_doctor_checks_default_ai_mart_import_contract(self) -> None:
-        import codebuddy.ai_mart as ai_mart
-
-        class FakeAiMartAuthClient:
-            def authenticate_broker(self):
-                return type("Token", (), {"access_token": "azure-token"})()
-
-        original_auth = ai_mart.auth_client
-        original_base_url = ai_mart.base_url
-        ai_mart.auth_client = FakeAiMartAuthClient()
-        ai_mart.base_url = "https://aimark.example/openai/v1"
+    def test_doctor_checks_external_ai_mart_import_contract(self) -> None:
+        (self.root / "ai_mart.py").write_text('base_url = "https://aimark.example/openai/v1"\n', encoding="utf-8")
+        (self.root / "azure_auth.py").write_text(
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return type('Token', (), {'access_token': 'azure-token'})()\n",
+            encoding="utf-8",
+        )
         stdout = StringIO()
-        try:
-            with redirect_stdout(stdout):
-                code = main(["doctor"])
-        finally:
-            ai_mart.auth_client = original_auth
-            ai_mart.base_url = original_base_url
+        with redirect_stdout(stdout):
+            code = main(["doctor"])
 
         self.assertEqual(code, 0)
         self.assertIn('"provider": "azure_openai"', stdout.getvalue())
-        self.assertIn('"auth": "client codebuddy.azure_auth:AzureAuthClient"', stdout.getvalue())
+        self.assertIn('"auth": "client azure_auth:AzureAuthClient"', stdout.getvalue())
         self.assertIn('"base_url": "set"', stdout.getvalue())
 
     def test_auth_set_persists_provider_key_via_writer_without_project_config_secret(self) -> None:
@@ -498,8 +487,8 @@ model = "sonar-pro"
         finally:
             cli_module.build_llm_client = original_build_llm
 
-        project_map = (self.root / ".pyagent" / "index" / "project_map.md").read_text(encoding="utf-8")
-        metadata = (self.root / ".pyagent" / "index" / "project_memory.json").read_text(encoding="utf-8")
+        project_map = (self.root / ".buddy" / "index" / "project_map.md").read_text(encoding="utf-8")
+        metadata = (self.root / ".buddy" / "index" / "project_memory.json").read_text(encoding="utf-8")
         self.assertIn("Files edited: app.py", project_map)
         self.assertIn("Change f to return 2", metadata)
 
@@ -523,7 +512,7 @@ model = "sonar-pro"
         self.assertIn("continued automatically", stdout.getvalue())
 
     def test_cli_prompt_missing_provider_credentials_fails_cleanly(self) -> None:
-        config = self.root / ".pyagent" / "config.toml"
+        config = self.root / ".buddy" / "config.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
             """
@@ -649,8 +638,8 @@ api_key_env = "CODEBUDDY_MISSING_TEST_KEY"
 
     def test_agent_branch_creation_ignores_codebuddy_state_only(self) -> None:
         init_empty_repo(self.root)
-        (self.root / ".pyagent" / "sessions").mkdir(parents=True)
-        (self.root / ".pyagent" / "sessions" / "current.json").write_text("{}", encoding="utf-8")
+        (self.root / ".buddy" / "sessions").mkdir(parents=True)
+        (self.root / ".buddy" / "sessions" / "current.json").write_text("{}", encoding="utf-8")
 
         branch = GitManager(self.root).ensure_agent_branch("work")
 
@@ -687,6 +676,28 @@ api_key_env = "CODEBUDDY_MISSING_TEST_KEY"
         commands = [entry.details.get("command", "") for entry in journal.entries() if entry.action == "command_complete"]
         self.assertTrue(any(command.startswith("git add") for command in commands))
         self.assertTrue(any(command.startswith("git commit") for command in commands))
+
+    def test_agent_branch_checkpoint_can_push_to_origin(self) -> None:
+        init_repo_with_commit(self.root, {"agent.txt": "base\n"})
+        remote = Path(self.tmp.name) / "origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=self.root, check=True)
+        journal = Journal(self.root / "journal.jsonl")
+        git = GitManager(self.root, command_broker=CommandBroker(self.root, journal=journal, session_id="s1"))
+        git.ensure_agent_branch("work")
+        (self.root / "agent.txt").write_text("agent change\n", encoding="utf-8")
+
+        self.assertTrue(git.checkpoint_commit("checkpoint", ["agent.txt"]))
+        self.assertTrue(git.push_current_branch("origin"))
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.root, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        remote_branches = subprocess.run(
+            ["git", "--git-dir", str(remote), "branch", "--list", branch],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+
+        self.assertIn(branch, remote_branches)
 
     def test_agent_branch_required_branches_from_user_feature_branch(self) -> None:
         init_empty_repo(self.root)

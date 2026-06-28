@@ -256,7 +256,7 @@ class ToolRuntime:
             self.ledger.files_edited.append(rel)
         self.ledger.completed_actions.append(f"{verb} {rel}")
         diff_stat = _diff_stat(result.diff)
-        events.append(AgentEvent("edit", event_title, f"{rel} ({diff_stat})"))
+        events.append(AgentEvent("edit", event_title, f"{rel} ({diff_stat})", body=result.diff))
         return ToolResult(
             tool,
             True,

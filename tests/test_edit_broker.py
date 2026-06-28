@@ -168,13 +168,22 @@ class EditBrokerTests(unittest.TestCase):
         self.assertNotEqual(result.before_hash, result.after_hash)
         self.assertEqual([entry.action for entry in self.journal.entries()], ["edit_intent", "rewrite_file"])
 
-    def test_pyagent_files_are_protected_from_edit_broker(self) -> None:
-        target = self.root / ".pyagent" / "sessions" / "current.json"
+    def test_buddy_state_files_are_protected_from_edit_broker(self) -> None:
+        target = self.root / ".buddy" / "sessions" / "current.json"
         target.parent.mkdir(parents=True)
         target.write_text("{}", encoding="utf-8")
 
         with self.assertRaises(FileSafetyError):
             self.broker.exact_replace(target, "{}", '{"x": 1}')
+
+    def test_buddy_project_skills_can_be_edited(self) -> None:
+        target = self.root / ".buddy" / "skills" / "docs.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("Prefer terse docs.\n", encoding="utf-8")
+
+        self.broker.exact_replace(target, "terse", "tutorial")
+
+        self.assertEqual(target.read_text(encoding="utf-8"), "Prefer tutorial docs.\n")
 
     def test_undo_restores_file_and_refuses_after_drift(self) -> None:
         path = self.root / "sample.txt"
