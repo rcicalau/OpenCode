@@ -80,6 +80,38 @@ class CliLlmAgentGitTests(unittest.TestCase):
         self.assertEqual(main(["config", "validate"]), 0)
         self.assertEqual(main(["status"]), 0)
 
+    def test_no_args_from_tty_defaults_to_chat(self) -> None:
+        import codebuddy.cli as cli_module
+
+        original_stdin = sys.stdin
+        original_configure = cli_module.maybe_configure_project_provider
+        original_prompt_auth = cli_module.maybe_prompt_for_auth
+        original_chat_loop = cli_module.chat_loop
+        called = []
+
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+        def fake_chat_loop(root, ledger, config, journal, startup_context):
+            called.append((root, ledger.session_id, startup_context))
+            return 0
+
+        sys.stdin = TtyStdin()
+        cli_module.maybe_configure_project_provider = lambda _root, _config: None
+        cli_module.maybe_prompt_for_auth = lambda _config: None
+        cli_module.chat_loop = fake_chat_loop
+        try:
+            self.assertEqual(main([]), 0)
+        finally:
+            sys.stdin = original_stdin
+            cli_module.maybe_configure_project_provider = original_configure
+            cli_module.maybe_prompt_for_auth = original_prompt_auth
+            cli_module.chat_loop = original_chat_loop
+
+        self.assertEqual(called[0][0], self.root.resolve())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
+
     def test_ctrl_c_exits_cleanly_without_traceback(self) -> None:
         import codebuddy.cli as cli_module
 

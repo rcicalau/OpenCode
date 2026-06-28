@@ -65,6 +65,8 @@ def _main(argv: list[str] | None = None) -> int:
     if "--new" in argv:
         new_session = True
         argv.remove("--new")
+    if not argv and sys.stdin.isatty():
+        argv.append("chat")
     command_names = {"doctor", "config", "status", "compact", "undo", "chat", "auth"}
     command = argv[0] if argv and argv[0] in command_names else None
     config_subcommand = argv[1] if len(argv) > 1 and command == "config" else "show"
