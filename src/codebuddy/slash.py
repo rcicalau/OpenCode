@@ -7,6 +7,7 @@ from pathlib import Path
 from .compaction import compact_ledger
 from .git_manager import GitManager
 from .journal import Journal
+from .objective_state import IDLE
 from .paths import PathPolicy
 from .session import SessionLedger, SessionManager
 from .workplan import WorkPlanManager
@@ -29,6 +30,7 @@ class SlashCommandHandler:
         journal: Journal,
         git_manager: GitManager,
         yolo_state: dict[str, bool] | None = None,
+        compact_max_tokens: int = 4000,
     ) -> None:
         self.project_root = project_root
         self.ledger = ledger
@@ -36,6 +38,7 @@ class SlashCommandHandler:
         self.journal = journal
         self.git_manager = git_manager
         self.yolo_state = yolo_state if yolo_state is not None else {"enabled": False}
+        self.compact_max_tokens = compact_max_tokens
 
     def handle(self, text: str) -> SlashResult:
         stripped = text.strip()
@@ -54,9 +57,7 @@ class SlashCommandHandler:
             self.manager.save(self.ledger)
             return SlashResult(True, True, "bye")
         if command == "/clear":
-            self.ledger.mode = "chat"
-            self.ledger.objective = None
-            self.ledger.plan.clear()
+            self._clear_active_work()
             self.manager.save(self.ledger)
             return SlashResult(True, False, "cleared active context")
         if command == "/status":
@@ -70,13 +71,22 @@ class SlashCommandHandler:
                 "objective_state": self.ledger.objective_state,
                 "plan": [{"step": item.step, "status": item.status} for item in self.ledger.plan],
                 "workplan": _workplan_payload(workplans, plan),
-                "git": {"is_repo": status.is_repo, "branch": status.branch, "dirty": bool(status.porcelain.strip())},
+                "git": {
+                    "is_repo": status.is_repo,
+                    "branch": status.branch,
+                    "dirty": bool(status.porcelain.strip()),
+                    "remote": _remote_payload(self.git_manager.remote_info()) if status.is_repo else None,
+                },
                 "validation": self.ledger.validation_state,
                 "yolo": self.yolo_state.get("enabled", False),
             }
             return SlashResult(True, False, json.dumps(payload, indent=2))
         if command == "/compact":
-            content = compact_ledger(self.ledger, self.manager.session_dir(self.ledger.session_id) / "compacted_state.md")
+            content = compact_ledger(
+                self.ledger,
+                self.manager.session_dir(self.ledger.session_id) / "compacted_state.md",
+                max_tokens=self.compact_max_tokens,
+            )
             return SlashResult(True, False, content)
         if command == "/undo":
             if arg == "session" or command == "/undo-session":
@@ -89,6 +99,15 @@ class SlashCommandHandler:
             return SlashResult(True, False, "undone session:\n" + "\n".join(str(path) for path in paths))
         if command == "/yolo":
             self.yolo_state["enabled"] = not self.yolo_state.get("enabled", False)
+            if self.yolo_state["enabled"]:
+                if self.ledger.pending_next_step == "approve command before execution":
+                    result = self._approve_pending_command()
+                    result.message = f"yolo: on; {result.message}"
+                    return result
+                if self.ledger.pending_next_step == "approve dirty branch before execution":
+                    result = self._approve_dirty_branch()
+                    result.message = f"yolo: on; {result.message}"
+                    return result
             return SlashResult(True, False, f"yolo: {'on' if self.yolo_state['enabled'] else 'off'}")
         if command in {"/approve-branch", "/approve-dirty-branch", "/approve", "/a"}:
             if self.ledger.pending_next_step == "approve command before execution":
@@ -123,7 +142,60 @@ class SlashCommandHandler:
             return SlashResult(True, False, "committed" if committed else "nothing to commit")
         if command == "/editor":
             return SlashResult(True, False, "/editor is available inside interactive chat")
+        if command == "/skills":
+            return SlashResult(True, False, self._skills_listing())
+        skill = self._skill_for_command(command)
+        if skill:
+            skill_name, skill_path, content = skill
+            if not arg.strip():
+                return SlashResult(True, False, content)
+            prompt = (
+                f"Use project skill /{skill_name} from {skill_path.relative_to(self.project_root).as_posix()}.\n\n"
+                f"{content.strip()}\n\n"
+                "User request:\n"
+                f"{arg.strip()}"
+            )
+            return SlashResult(True, False, f"using skill /{skill_name}", prompt)
         return SlashResult(True, False, f"unknown slash command: {command}")
+
+    def _clear_active_work(self) -> None:
+        self.ledger.mode = "chat"
+        self.ledger.objective = None
+        self.ledger.objective_state = IDLE
+        self.ledger.plan.clear()
+        self.ledger.pending_next_step = None
+        self.ledger.blockers.clear()
+        self.ledger.assumptions.clear()
+        self.ledger.approvals.clear()
+        self.ledger.validation_state.clear()
+        WorkPlanManager(self.project_root, self.ledger.session_id, PathPolicy(self.project_root)).clear_current()
+
+    def _skills_listing(self) -> str:
+        skills = self._project_skills()
+        if not skills:
+            return "no project skills found"
+        lines = ["Project skills:"]
+        lines.extend(f"- /{name} ({path.relative_to(self.project_root).as_posix()})" for name, path in skills)
+        return "\n".join(lines)
+
+    def _skill_for_command(self, command: str) -> tuple[str, Path, str] | None:
+        name = command.removeprefix("/").strip().lower()
+        if not name or any(char not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for char in name):
+            return None
+        path = self.project_root / ".buddy" / "skills" / f"{name}.md"
+        if not path.exists() or not path.is_file():
+            return None
+        return name, path, path.read_text(encoding="utf-8")
+
+    def _project_skills(self) -> list[tuple[str, Path]]:
+        skills_dir = self.project_root / ".buddy" / "skills"
+        if not skills_dir.exists():
+            return []
+        return [
+            (path.stem, path)
+            for path in sorted(skills_dir.glob("*.md"))
+            if path.is_file() and path.stem.lower() != "readme"
+        ]
 
     def _approve_dirty_branch(self) -> SlashResult:
         self.ledger.approvals["dirty_branch"] = True
@@ -174,6 +246,17 @@ def _workplan_payload(manager: WorkPlanManager, plan) -> dict | None:
             }
             for item in plan.items
         ],
+    }
+
+
+def _remote_payload(info) -> dict | None:
+    if info is None:
+        return None
+    return {
+        "provider": info.provider,
+        "host": info.host,
+        "owner": info.owner,
+        "repo": info.repo,
     }
 
 

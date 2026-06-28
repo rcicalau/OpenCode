@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .command_broker import CommandBroker
 from .errors import ConfirmationRequired
@@ -18,6 +19,16 @@ class GitStatus:
     root: Path | None = None
     branch: str | None = None
     porcelain: str = ""
+
+
+@dataclass(slots=True)
+class GitRemoteInfo:
+    name: str
+    url: str
+    provider: str
+    host: str
+    owner: str
+    repo: str
 
 
 class GitManager:
@@ -106,6 +117,18 @@ class GitManager:
             return False
         remote = self._git(["remote"], check=False).stdout.splitlines()
         return name in {item.strip() for item in remote}
+
+    def remote_info(self, name: str = "origin") -> GitRemoteInfo | None:
+        status = self.status()
+        if not status.is_repo:
+            return None
+        completed = self._git(["remote", "get-url", name], check=False)
+        if completed.returncode != 0:
+            return None
+        url = completed.stdout.strip()
+        if not url:
+            return None
+        return _parse_remote_url(name, url)
 
     def push_current_branch(self, remote: str = "origin") -> bool:
         status = self.status()
@@ -237,6 +260,39 @@ def _decode_timeout_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def _parse_remote_url(name: str, url: str) -> GitRemoteInfo | None:
+    host = ""
+    path = ""
+    scp_like = re.match(r"^(?:(?P<user>[^@/:]+)@)?(?P<host>[^/:]+):(?P<path>.+)$", url)
+    if scp_like and "://" not in url:
+        host = scp_like.group("host")
+        path = scp_like.group("path")
+    else:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path.lstrip("/")
+    if not host or not path:
+        return None
+    parts = [part for part in path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    repo = parts[-1]
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    owner = "/".join(parts[:-1])
+    provider = _remote_provider(host)
+    return GitRemoteInfo(name=name, url=url, provider=provider, host=host, owner=owner, repo=repo)
+
+
+def _remote_provider(host: str) -> str:
+    lowered = host.lower()
+    if "github" in lowered:
+        return "github"
+    if "gitlab" in lowered:
+        return "gitlab"
+    return "git"
 
 
 def _user_dirty_porcelain(porcelain: str) -> str:

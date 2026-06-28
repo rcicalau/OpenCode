@@ -87,6 +87,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "storage": {
         "store_full_transcript": True,
         "redact_secrets": True,
+        "compact_max_tokens": 4000,
     },
     "tools": {
         "read": True,
@@ -167,6 +168,9 @@ def validate_config(config: dict[str, Any]) -> None:
     rate_limit_backoff_seconds = config["agent"].get("rate_limit_backoff_seconds", 2)
     if not isinstance(rate_limit_backoff_seconds, (int, float)) or rate_limit_backoff_seconds < 0:
         raise ConfigError("agent.rate_limit_backoff_seconds must be a non-negative number")
+    compact_max_tokens = config["storage"].get("compact_max_tokens", 4000)
+    if not isinstance(compact_max_tokens, int) or compact_max_tokens <= 0:
+        raise ConfigError("storage.compact_max_tokens must be a positive integer")
 
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:

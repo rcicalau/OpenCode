@@ -97,6 +97,14 @@ class WorkPlanManager:
         active["summary"] = self.summary(plan)
         self.active_plan_path.write_text(json.dumps(active, indent=2), encoding="utf-8")
 
+    def clear_current(self) -> None:
+        for path in [self.current_path, self.active_plan_path]:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+
     def active_or_new(self, objective: str) -> WorkPlan | None:
         existing = self.load_current()
         if existing and existing.blocked_items() and _is_retry_prompt(objective):

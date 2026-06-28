@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import difflib
 import os
 import re
@@ -99,6 +100,7 @@ class EditBroker:
         if newline == "\r\n":
             normalized = content.replace("\n", "\r\n").replace("\r\r\n", "\r\n")
         after = normalized.encode("utf-8")
+        _validate_python_syntax(resolved, normalized)
         if self.journal:
             self.journal.record(
                 self.session_id,
@@ -136,6 +138,7 @@ class EditBroker:
 
     def _write_snapshot(self, snapshot: TextSnapshot, updated_text: str, action: str) -> EditResult:
         before = snapshot.raw
+        _validate_python_syntax(snapshot.path, updated_text)
         after = encode_like(snapshot, updated_text)
         if before == after:
             raise EditConflict(f"edit produced no change: {snapshot.path}")
@@ -201,6 +204,16 @@ def _normalize_text_newlines(text: str, newline: str) -> str:
     if newline == "\n":
         return normalized
     return normalized.replace("\n", newline)
+
+
+def _validate_python_syntax(path: Path, text: str) -> None:
+    if path.suffix != ".py":
+        return
+    try:
+        ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        location = f"line {exc.lineno}" if exc.lineno else "unknown line"
+        raise EditConflict(f"python syntax failed after edit in {path}: {exc.msg} ({location})") from exc
 
 
 HUNK_RE = re.compile(r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? \+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@")

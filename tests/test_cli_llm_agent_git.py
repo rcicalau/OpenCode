@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.agent import CodeBuddyAgent, route_intent
 from codebuddy.auth import auth_check, auth_set, auth_status
-from codebuddy.cli import build_brokers, main, prompt_project_root
+from codebuddy.cli import build_brokers, main, maybe_prompt_resume, prompt_project_root
 from codebuddy.command_broker import CommandBroker, CommandResult, Risk
 from codebuddy.edit_broker import EditBroker
 from codebuddy.errors import ConfirmationRequired
@@ -22,7 +22,10 @@ from codebuddy.global_state import set_last_project_root
 from codebuddy.journal import Journal
 from codebuddy.llm import FakeLLMClient
 from codebuddy.paths import PathPolicy, resolve_project_root
+from codebuddy.project_scaffold import ensure_buddy_scaffold
+from codebuddy.project_session import ProjectSession
 from codebuddy.session import SessionManager
+from codebuddy.slash import SlashCommandHandler
 
 
 def init_empty_repo(root: Path) -> None:
@@ -511,6 +514,72 @@ model = "sonar-pro"
         self.assertTrue(branch.startswith("codebuddy/"))
         self.assertIn("continued automatically", stdout.getvalue())
 
+    def test_yolo_approves_pending_command_and_continues_objective(self) -> None:
+        manager = SessionManager(self.root)
+        ledger = manager.load_or_create()
+        ledger.objective = "write approved file"
+        ledger.pending_next_step = "approve command before execution"
+        ledger.approvals["pending_command"] = "Set-Content -Path approved.txt -Value yes"
+        ledger.approvals["pending_command_cwd"] = str(self.root)
+        manager.save(ledger)
+        journal = Journal(manager.session_dir(ledger.session_id) / "journal.jsonl")
+        broker = CommandBroker(self.root, journal=journal, session_id=ledger.session_id)
+        handler = SlashCommandHandler(
+            self.root,
+            ledger,
+            manager,
+            journal,
+            GitManager(self.root, command_broker=broker),
+            {"enabled": False},
+        )
+
+        result = handler.handle("/yolo")
+
+        self.assertTrue((self.root / "approved.txt").exists())
+        self.assertTrue(handler.yolo_state["enabled"])
+        self.assertEqual(ledger.pending_next_step, None)
+        self.assertEqual(result.followup_prompt, "write approved file")
+
+    def test_slash_command_can_call_project_skill(self) -> None:
+        ensure_buddy_scaffold(self.root)
+        skill = self.root / ".buddy" / "skills" / "docs.md"
+        skill.write_text("# Docs Skill\n\nWrite tutorial docstrings.\n", encoding="utf-8")
+        manager = SessionManager(self.root)
+        ledger = manager.load_or_create()
+        journal = Journal(manager.session_dir(ledger.session_id) / "journal.jsonl")
+        handler = SlashCommandHandler(
+            self.root,
+            ledger,
+            manager,
+            journal,
+            GitManager(self.root, command_broker=CommandBroker(self.root, journal=journal, session_id=ledger.session_id)),
+        )
+
+        listing = handler.handle("/skills")
+        result = handler.handle("/docs document agent.py")
+
+        self.assertIn("/docs", listing.message)
+        self.assertIn("Write tutorial docstrings.", result.followup_prompt)
+        self.assertIn("document agent.py", result.followup_prompt)
+
+    def test_resume_prompt_can_start_fresh_session_when_previous_work_is_pending(self) -> None:
+        first = ProjectSession.open(self.root)
+        first.ledger.objective = "finish pending docs"
+        first.ledger.pending_next_step = "document src/app.py"
+        first.manager.save(first.ledger)
+        prompts: list[str] = []
+
+        second = maybe_prompt_resume(
+            self.root,
+            first,
+            input_func=lambda: "n",
+            output_func=prompts.append,
+        )
+
+        self.assertNotEqual(second.ledger.session_id, first.ledger.session_id)
+        self.assertIsNone(second.ledger.objective)
+        self.assertTrue(any("finish pending docs" in line for line in prompts))
+
     def test_cli_prompt_missing_provider_credentials_fails_cleanly(self) -> None:
         config = self.root / ".buddy" / "config.toml"
         config.parent.mkdir(parents=True)
@@ -698,6 +767,28 @@ api_key_env = "CODEBUDDY_MISSING_TEST_KEY"
         ).stdout
 
         self.assertIn(branch, remote_branches)
+
+    def test_git_remote_info_detects_github_and_gitlab_from_origin(self) -> None:
+        init_empty_repo(self.root)
+        subprocess.run(["git", "remote", "add", "origin", "git@gitlab.example.com:team/project.git"], cwd=self.root, check=True)
+
+        gitlab = GitManager(self.root).remote_info()
+
+        self.assertIsNotNone(gitlab)
+        self.assertEqual(gitlab.provider, "gitlab")
+        self.assertEqual(gitlab.host, "gitlab.example.com")
+        self.assertEqual(gitlab.owner, "team")
+        self.assertEqual(gitlab.repo, "project")
+
+        subprocess.run(["git", "remote", "set-url", "origin", "https://github.com/acme/widgets.git"], cwd=self.root, check=True)
+
+        github = GitManager(self.root).remote_info()
+
+        self.assertIsNotNone(github)
+        self.assertEqual(github.provider, "github")
+        self.assertEqual(github.host, "github.com")
+        self.assertEqual(github.owner, "acme")
+        self.assertEqual(github.repo, "widgets")
 
     def test_agent_branch_required_branches_from_user_feature_branch(self) -> None:
         init_empty_repo(self.root)

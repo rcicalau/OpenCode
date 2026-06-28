@@ -168,6 +168,22 @@ class EditBrokerTests(unittest.TestCase):
         self.assertNotEqual(result.before_hash, result.after_hash)
         self.assertEqual([entry.action for entry in self.journal.entries()], ["edit_intent", "rewrite_file"])
 
+    def test_python_edits_reject_invalid_syntax_without_writing(self) -> None:
+        path = self.root / "sample.py"
+        original = "def f():\n    return 1\n"
+        path.write_text(original, encoding="utf-8")
+
+        with self.assertRaises(EditConflict):
+            self.broker.exact_replace("sample.py", "return 1", "return (")
+
+        self.assertEqual(path.read_text(encoding="utf-8"), original)
+
+    def test_python_file_creation_rejects_invalid_syntax_without_writing(self) -> None:
+        with self.assertRaises(EditConflict):
+            self.broker.create_file("broken.py", "def f(:\n    return 1\n")
+
+        self.assertFalse((self.root / "broken.py").exists())
+
     def test_buddy_state_files_are_protected_from_edit_broker(self) -> None:
         target = self.root / ".buddy" / "sessions" / "current.json"
         target.parent.mkdir(parents=True)

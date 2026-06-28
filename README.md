@@ -63,6 +63,7 @@ Interactive chat uses a colorized terminal UI:
 - `Esc`, then `Enter`, inserts a newline as a reliable fallback.
 - Multiline paste is inserted as-is.
 - Slash commands autocomplete while typing `/`.
+- Project skills in `.buddy\skills\*.md` are callable as `/skill-name your request`.
 - Agent actions such as git branch creation, file edits, shell commands, searches, and validation are shown inline before the final answer.
 
 Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default, using model `openai/gpt-5.4`.
@@ -111,6 +112,8 @@ Each active session stores durable conversation history:
 
 `conversation.jsonl` records each turn's user prompt, assistant response, visible tool/model events, changed files, mode, and timestamp. `/compact` summarizes both the transcript and the ledger into `compacted_state.md`. Future model calls include the compacted memory when it exists, or recent conversation turns when it does not.
 
+Compaction respects `storage.compact_max_tokens`, so generated memory stays under a bounded approximate token budget instead of growing without limit.
+
 On launch, Code Buddy refreshes a project map at:
 
 ```text
@@ -127,6 +130,8 @@ The index also writes deterministic module summaries:
 ```
 
 Large execution objectives such as "document each file in the codebase" are split into durable work-plan slices under `.buddy\workplans`. Each slice is validated, recorded in status, and can be resumed with `continue` or retried with `retry blocked`.
+
+When chat starts with unfinished work in the project, Code Buddy shows a short resume summary and asks whether to continue or start fresh. Starting fresh opens a new session and clears the active work-plan pointer.
 
 When you start it inside a git repo, or a folder with `.buddy\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder is the project root. You can also bind it explicitly:
 
@@ -191,6 +196,6 @@ Code Buddy sends native OpenAI-compatible tool schemas when available and also s
 
 Streaming transport support is implemented for OpenAI-compatible server-sent-event responses, including content deltas and native streamed tool-call reconstruction. The terminal renderer can display streamed assistant chunks. Tool-using turns may still choose non-streaming completion when that keeps the retry loop simpler and more deterministic.
 
-After file edits, Code Buddy runs validation even if the model forgets to request it. Shell commands stay inside the selected project root, hard-deny commands cannot be bypassed by ordinary tool approval, and Git branch creation refuses dirty user work unless explicitly approved.
+After file edits, Code Buddy runs validation even if the model forgets to request it. Python file edits are syntax-checked before write, so invalid Python is rejected without touching the file. Shell commands stay inside the selected project root, hard-deny commands cannot be bypassed by ordinary tool approval, and Git branch creation refuses dirty user work unless explicitly approved.
 
-If Git branch creation stops because the worktree already has user changes, review the changes, then type `y`, `/a`, `/approve`, or `/approve-branch` to allow one agent-branch creation carrying those changes and continue the saved objective.
+If Git branch creation or a shell command stops for approval, type `y`, `/a`, `/approve`, or `/approve-branch` to approve once and continue the saved objective. `/yolo` turns YOLO mode on and also approves any currently pending request once. Git remote detection reads the current project's `.git` remote config and recognizes both GitHub and GitLab-style origins, including self-hosted GitLab hosts.

@@ -93,6 +93,8 @@ def _main(argv: list[str] | None = None) -> int:
         config = load_result.config
         maybe_prompt_for_auth(config)
     project_session = ProjectSession.open(root, new=new_session)
+    if command == "chat" and sys.stdin.isatty() and not new_session:
+        project_session = maybe_prompt_resume(root, project_session)
     manager = project_session.manager
     ledger = project_session.ledger
     session_dir = manager.session_dir(ledger.session_id)
@@ -115,6 +117,7 @@ def _main(argv: list[str] | None = None) -> int:
         git_status = git_manager.status()
         workplans = WorkPlanManager(root, ledger.session_id, build_path_policy(root, config))
         plan = workplans.load_current()
+        remote = git_manager.remote_info() if git_status.is_repo else None
         print(
             json.dumps(
                 {
@@ -126,7 +129,19 @@ def _main(argv: list[str] | None = None) -> int:
                     "pending_next_step": ledger.pending_next_step,
                     "plan": [{"step": item.step, "status": item.status} for item in ledger.plan],
                     "workplan": _workplan_payload(workplans, plan),
-                    "git": {"is_repo": git_status.is_repo, "branch": git_status.branch, "dirty": bool(git_status.porcelain.strip())},
+                    "git": {
+                        "is_repo": git_status.is_repo,
+                        "branch": git_status.branch,
+                        "dirty": bool(git_status.porcelain.strip()),
+                        "remote": {
+                            "provider": remote.provider,
+                            "host": remote.host,
+                            "owner": remote.owner,
+                            "repo": remote.repo,
+                        }
+                        if remote
+                        else None,
+                    },
                     "validation": ledger.validation_state,
                 },
                 indent=2,
@@ -134,7 +149,11 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 0
     if command == "compact":
-        content = compact_ledger(ledger, session_dir / "compacted_state.md")
+        content = compact_ledger(
+            ledger,
+            session_dir / "compacted_state.md",
+            max_tokens=int(config.get("storage", {}).get("compact_max_tokens", 4000)),
+        )
         print(content)
         return 0
     if command == "undo":
@@ -210,6 +229,38 @@ def prompt_project_root(default_root: Path, picker=None) -> Path:
     selected.mkdir(parents=True, exist_ok=True)
     set_last_project_root(selected)
     return selected
+
+
+def maybe_prompt_resume(root: Path, project_session: ProjectSession, input_func=input, output_func=print) -> ProjectSession:
+    ledger = project_session.ledger
+    if not _has_resumable_work(ledger):
+        return project_session
+    output_func("")
+    output_func("Previous Code Buddy work is still active in this project.")
+    output_func(f"Objective: {ledger.objective or 'none'}")
+    if ledger.pending_next_step:
+        output_func(f"Next: {ledger.pending_next_step}")
+    if ledger.plan:
+        completed = sum(1 for item in ledger.plan if item.status == "completed")
+        output_func(f"Plan: {completed}/{len(ledger.plan)} completed")
+    if ledger.blockers:
+        output_func("Blockers: " + "; ".join(ledger.blockers[:3]))
+    output_func("Continue where you left off? [Y/n]: ")
+    answer = input_func().strip().lower()
+    if answer in {"n", "no", "new", "fresh", "start fresh", "clear"}:
+        WorkPlanManager(root, ledger.session_id, build_path_policy(root, load_config(root).config)).clear_current()
+        return ProjectSession.open(root, new=True)
+    return project_session
+
+
+def _has_resumable_work(ledger) -> bool:
+    return bool(
+        ledger.objective
+        or ledger.pending_next_step
+        or ledger.plan
+        or ledger.blockers
+        or ledger.approvals
+    )
 
 
 def _project_is_configured(root: Path) -> bool:
@@ -426,7 +477,15 @@ def build_slash_handler(root: Path, ledger, manager: SessionManager, journal: Jo
         command_broker,
         bool(git_config.get("agent_branch_required", True)),
     )
-    return SlashCommandHandler(root, ledger, manager, journal, git_manager, yolo_state)
+    return SlashCommandHandler(
+        root,
+        ledger,
+        manager,
+        journal,
+        git_manager,
+        yolo_state,
+        int(config.get("storage", {}).get("compact_max_tokens", 4000)),
+    )
 
 
 def doctor(root: Path, config: dict) -> int:

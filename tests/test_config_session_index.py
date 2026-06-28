@@ -148,6 +148,22 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertIn("[completed] find code", content)
         self.assertIn("tests/test_app.py", content)
 
+    def test_compaction_respects_max_token_budget(self) -> None:
+        manager = SessionManager(self.root)
+        ledger = manager.load_or_create()
+        ledger.objective = "x" * 1000
+        ledger.files_inspected.extend(f"src/file_{index}.py" for index in range(100))
+        ledger.blockers.extend("very long blocker " + ("x" * 200) for _ in range(20))
+
+        content = compact_ledger(
+            ledger,
+            self.root / ".buddy" / "sessions" / ledger.session_id / "compacted_state.md",
+            max_tokens=120,
+        )
+
+        self.assertLessEqual(len(content), 120 * 4)
+        self.assertIn("compacted state truncated to token budget", content)
+
     def test_indexer_records_files_and_python_symbols(self) -> None:
         source = self.root / "pkg.py"
         source.write_text("class A:\n    pass\n\ndef f():\n    return 1\n", encoding="utf-8")

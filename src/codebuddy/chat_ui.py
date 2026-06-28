@@ -28,7 +28,12 @@ SLASH_COMMANDS = [
     "/help",
     "/merge-ready",
     "/review",
+    "/skills",
     "/status",
+    "/debugging",
+    "/development",
+    "/reasoning",
+    "/testing",
     "/undo",
     "/undo-session",
     "/yolo",
@@ -47,7 +52,7 @@ def welcome_message(project_root: Path, session_id: str, provider: str, model: s
         f"Project: {project_root}\n"
         f"Session: {session_id}\n"
         f"Model: {provider}/{model}\n"
-        "Enter sends. Shift+Enter adds a line. Paste multiline text normally. Type /help for commands."
+        "Enter sends. Shift+Enter adds a line. Paste multiline text normally. Type /help or /skills."
     )
 
 
@@ -68,6 +73,7 @@ def help_message() -> str:
         "  /diff          Show git diff.\n"
         "  /branch        Show current branch.\n"
         "  /commit MSG    Commit agent-edited files on the agent branch.\n"
+        "  /skills        List project skills. Use /skill-name PROMPT to invoke one.\n"
         "  /a, /approve  Approve pending action and continue.\n"
         "  /yolo          Toggle confirmation-skipping mode for confirm-level actions.\n"
         "  /exit          Quit."

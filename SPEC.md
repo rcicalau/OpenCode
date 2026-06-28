@@ -62,6 +62,7 @@ Editing requirements:
 - All file creation, modification, rename, and delete operations must go through the edit broker or another deterministic broker with equivalent journaling and rollback behavior.
 - Edits must be scoped to the selected project root by default.
 - Malformed model tool calls must not crash or create partial edits. The runtime should repair, reject with a clear error, or ask the model for a corrected tool call within a bounded loop.
+- Python file edits must be syntax-checked before write; malformed Python must be rejected without modifying the file.
 - Successful edit objectives must prove that expected files changed before reporting success.
 
 ## 2. Product Goals
@@ -103,12 +104,14 @@ Editing requirements:
 - Secret and sensitive-file protection.
 - Durable local transcript, journal, task ledger, and session state.
 - Context compaction based on structured state, not generic summarization alone.
+- Context compaction must respect a configurable approximate token budget.
 - Codebase intelligence/indexing layer for large projects.
 - Harness-driven validation.
 - Git-aware branch-isolated workflow.
 - Agent-owned git branch for mutating work.
 - Optional auto checkpoint commits on the agent branch after useful validated milestones.
-- `/clear`, `/compact`, `/status`, `/undo`, `/yolo`, `/exit`, and git-related slash commands.
+- `/clear`, `/compact`, `/status`, `/skills`, `/undo`, `/yolo`, `/exit`, and git-related slash commands.
+- Project-local skills under `.buddy/skills/*.md` callable as `/skill-name <request>`.
 - `codebuddy doctor` or equivalent health check for installation, auth, config, shell, and project readiness.
 - Local-only logging and telemetry.
 - Internal reliability test suite for the agent itself.
@@ -173,6 +176,7 @@ The interactive terminal experience must support:
 - Concise status updates during long work.
 - `$EDITOR` fallback for long prompts.
 - Clear indication of current mode and YOLO state.
+- `/yolo` must approve any currently pending command or branch request once when it is switched on.
 - Graceful handling of Ctrl+C and interrupted tool runs.
 
 Streaming requirements:
@@ -192,6 +196,8 @@ Project root selection order:
 4. Last-used project only when the launch directory is unavailable or invalid.
 
 The selected project root owns its `.buddy` state. The Code Buddy source repo is not the target project unless the user explicitly selects it.
+
+When an interactive chat starts and the active project has unfinished work, Code Buddy must show a concise resume summary and ask whether to continue or start fresh. Starting fresh opens a new session and clears the active work-plan pointer so stale pending tasks do not bleed into new work.
 
 On every interactive spawn or one-shot prompt execution, Code Buddy must refresh a bounded project map before the user asks the first question. The map must be stored under the project root, not globally:
 
