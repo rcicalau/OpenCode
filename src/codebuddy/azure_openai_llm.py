@@ -15,7 +15,6 @@ from .tool_calls import parse_native_tool_calls
 
 DEFAULT_AUTH_CLIENT = "azure_auth:AzureAuthClient"
 DEFAULT_TOKEN_METHOD = "get_token"
-_MISSING_MODULE = object()
 _PROTECTED_PROJECT_MODULES = {"codebuddy"}
 
 
@@ -235,55 +234,13 @@ def _project_sys_path(project_root: Path | None, *extra_paths: Path):
 
 
 def _load_module_from_file(module_name: str, path: Path, project_root: Path | None) -> ModuleType:
-    package_name = _synthetic_package_name(path.parent)
-    qualified_name = f"{package_name}.{module_name}"
-    spec = importlib.util.spec_from_file_location(qualified_name, path)
+    spec = importlib.util.spec_from_file_location(f"_codebuddy_project_{module_name}_{abs(hash(path))}", path)
     if spec is None or spec.loader is None:
         raise ConfigError(f"could not load auth client module from {path}")
     module = importlib.util.module_from_spec(spec)
-    with _project_sys_path(project_root, path.parent), _temporary_file_package(package_name, path.parent):
-        previous_module = sys.modules.get(qualified_name, _MISSING_MODULE)
-        sys.modules[qualified_name] = module
-        try:
-            spec.loader.exec_module(module)
-        finally:
-            if previous_module is _MISSING_MODULE:
-                sys.modules.pop(qualified_name, None)
-            else:
-                sys.modules[qualified_name] = previous_module
+    with _project_sys_path(project_root, path.parent):
+        spec.loader.exec_module(module)
     return module
-
-
-def _synthetic_package_name(path: Path) -> str:
-    slug = str(abs(hash(path.resolve())))
-    return f"_codebuddy_external_{slug}"
-
-
-@contextmanager
-def _temporary_file_package(package_name: str, package_path: Path):
-    previous_package = sys.modules.get(package_name, _MISSING_MODULE)
-    previous_children = {
-        name: module
-        for name, module in sys.modules.items()
-        if name.startswith(package_name + ".")
-    }
-    package = ModuleType(package_name)
-    package.__file__ = str(package_path)
-    package.__package__ = package_name
-    package.__path__ = [str(package_path)]
-    try:
-        sys.modules[package_name] = package
-        yield
-    finally:
-        for name in list(sys.modules):
-            if name.startswith(package_name + ".") and name not in previous_children:
-                sys.modules.pop(name, None)
-        for name, module in previous_children.items():
-            sys.modules[name] = module
-        if previous_package is _MISSING_MODULE:
-            sys.modules.pop(package_name, None)
-        else:
-            sys.modules[package_name] = previous_package
 
 
 def _project_module_names(project_root: Path | None) -> set[str]:
