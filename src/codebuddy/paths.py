@@ -48,6 +48,8 @@ def is_project_marker(path: Path) -> bool:
     return (
         (path / ".git").exists()
         or (path / ".buddy" / "config.toml").exists()
+        or (path / ".buddy" / "sessions" / "current.json").exists()
+        or (path / "BUDDY.md").exists()
         or (path / "SPEC.md").exists()
         or (path / "pyproject.toml").exists()
         or (path / "AGENTS.md").exists()

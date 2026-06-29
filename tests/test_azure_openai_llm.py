@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.auth import auth_check
+import codebuddy.azure_openai_llm as azure_module
 from codebuddy.azure_openai_llm import AzureAuthOpenAIClient, load_auth_token, load_import_value
 from codebuddy.errors import ConfigError
 from codebuddy.llm import Message
@@ -20,12 +21,14 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.created_clients = []
         self.created_http_clients = []
+        self.old_module_file = azure_module.__file__
         self.old_modules = {
             name: sys.modules.get(name)
             for name in ("auth", "ai_mart", "azure_auth", "broker", "broker.ai_mart", "openai", "httpx")
         }
 
     def tearDown(self) -> None:
+        azure_module.__file__ = self.old_module_file
         for name, module in self.old_modules.items():
             if module is None:
                 sys.modules.pop(name, None)
@@ -220,6 +223,32 @@ class AzureOpenAILlmTests(unittest.TestCase):
         value = load_import_value("ai_mart:base_url", project_root=self.root)
 
         self.assertEqual(value, "https://aimark-src.example/openai/v1")
+
+    def test_provider_config_loads_base_url_from_codebuddy_src_fallback(self) -> None:
+        install_src = self.root / "install" / "src"
+        package_dir = install_src / "codebuddy"
+        project = self.root / "project"
+        package_dir.mkdir(parents=True)
+        project.mkdir()
+        azure_module.__file__ = str(package_dir / "azure_openai_llm.py")
+        (install_src / "ai_mart.py").write_text('base_url = "https://install-src.example/openai/v1"\n', encoding="utf-8")
+
+        value = load_import_value("ai_mart:base_url", project_root=project)
+
+        self.assertEqual(value, "https://install-src.example/openai/v1")
+
+    def test_provider_config_loads_base_url_from_codebuddy_package_fallback(self) -> None:
+        install_src = self.root / "install" / "src"
+        package_dir = install_src / "codebuddy"
+        project = self.root / "project"
+        package_dir.mkdir(parents=True)
+        project.mkdir()
+        azure_module.__file__ = str(package_dir / "azure_openai_llm.py")
+        (package_dir / "ai_mart.py").write_text('base_url = "https://package-src.example/openai/v1"\n', encoding="utf-8")
+
+        value = load_import_value("ai_mart:base_url", project_root=project)
+
+        self.assertEqual(value, "https://package-src.example/openai/v1")
 
     def test_project_src_package_imports_are_available(self) -> None:
         package = self.root / "src" / "broker"

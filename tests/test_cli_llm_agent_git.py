@@ -483,6 +483,50 @@ model = "sonar-pro"
         self.assertEqual(payload["base_url"], "set")
         self.assertNotIn("auth_error", payload)
 
+    def test_doctor_from_subfolder_uses_buddy_configured_project_root_for_ai_mart(self) -> None:
+        target = Path(self.tmp.name) / "configured-project"
+        nested = target / "tools" / "scripts"
+        target_src = target / "src"
+        install_dir = Path(self.tmp.name) / "buddy-install"
+        nested.mkdir(parents=True)
+        target_src.mkdir(parents=True)
+        install_dir.mkdir()
+        (target / "BUDDY.md").write_text("# Configured Project\n", encoding="utf-8")
+        (target_src / "ai_mart.py").write_text(
+            'base_url = "https://configured-project.example/openai/v1"\n'
+            "class AuthClient:\n"
+            "    def authenticate_broker(self):\n"
+            "        return type('Token', (), {'access_token': 'configured-token'})()\n"
+            "auth_client = AuthClient()\n",
+            encoding="utf-8",
+        )
+        (target_src / "azure_auth.py").write_text(
+            "from ai_mart import auth_client\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return auth_client.authenticate_broker()\n",
+            encoding="utf-8",
+        )
+        old_start = os.environ.get("CODEBUDDY_START_DIR")
+        os.environ["CODEBUDDY_START_DIR"] = str(nested)
+        stdout = StringIO()
+
+        try:
+            os.chdir(install_dir)
+            with redirect_stdout(stdout):
+                code = main(["doctor"])
+        finally:
+            if old_start is None:
+                os.environ.pop("CODEBUDDY_START_DIR", None)
+            else:
+                os.environ["CODEBUDDY_START_DIR"] = old_start
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(Path(payload["project_root"]), target.resolve())
+        self.assertEqual(payload["base_url"], "set")
+        self.assertNotIn("auth_error", payload)
+
     def test_auth_set_persists_provider_key_via_writer_without_project_config_secret(self) -> None:
         written: dict[str, str] = {}
         old_key = os.environ.get("PERPLEXITY_API_KEY")

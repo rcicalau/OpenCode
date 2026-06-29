@@ -176,9 +176,9 @@ def _split_import_path(path: str) -> tuple[str, str]:
 
 
 def _first_existing_module_file(module_name: str, project_root: Path | None) -> Path | None:
-    if not project_root or "." in module_name:
+    if "." in module_name:
         return None
-    for base in _project_import_paths(project_root):
+    for base in _import_paths(project_root):
         candidate = base / f"{module_name}.py"
         if candidate.exists():
             return candidate
@@ -196,9 +196,24 @@ def _project_import_paths(project_root: Path | None) -> list[Path]:
     return paths
 
 
+def _codebuddy_import_paths() -> list[Path]:
+    package_dir = Path(__file__).resolve().parent
+    source_root = package_dir.parent
+    return [source_root, package_dir]
+
+
+def _import_paths(project_root: Path | None) -> list[Path]:
+    paths: list[Path] = []
+    for path in [*_project_import_paths(project_root), *_codebuddy_import_paths()]:
+        resolved = path.resolve()
+        if resolved not in paths:
+            paths.append(resolved)
+    return paths
+
+
 @contextmanager
 def _project_sys_path(project_root: Path | None, *extra_paths: Path):
-    paths = [*extra_paths, *_project_import_paths(project_root)]
+    paths = [*extra_paths, *_import_paths(project_root)]
     inserted: list[str] = []
     module_snapshot = _snapshot_project_modules(project_root)
     try:
@@ -230,7 +245,7 @@ def _load_module_from_file(module_name: str, path: Path, project_root: Path | No
 
 def _project_module_names(project_root: Path | None) -> set[str]:
     names: set[str] = set()
-    for base in _project_import_paths(project_root):
+    for base in _import_paths(project_root):
         if not base.exists():
             continue
         for child in base.iterdir():
@@ -255,7 +270,7 @@ def _snapshot_project_modules(project_root: Path | None) -> dict[str, Any]:
 
 
 def _evict_non_project_modules(project_root: Path | None, snapshot: dict[str, Any]) -> None:
-    project_paths = _project_import_paths(project_root)
+    project_paths = _import_paths(project_root)
     for name, module in list(snapshot.items()):
         if not _module_origin_under(module, project_paths):
             sys.modules.pop(name, None)
