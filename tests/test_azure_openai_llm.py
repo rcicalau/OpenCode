@@ -24,7 +24,17 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.old_module_file = azure_module.__file__
         self.old_modules = {
             name: sys.modules.get(name)
-            for name in ("auth", "ai_mart", "azure_auth", "broker", "broker.ai_mart", "openai", "httpx")
+            for name in (
+                "auth",
+                "ai_mart",
+                "azure_auth",
+                "broker",
+                "broker.ai_mart",
+                "codebuddy.ai_mart",
+                "codebuddy.azure_auth",
+                "openai",
+                "httpx",
+            )
         }
 
     def tearDown(self) -> None:
@@ -249,6 +259,58 @@ class AzureOpenAILlmTests(unittest.TestCase):
         value = load_import_value("ai_mart:base_url", project_root=project)
 
         self.assertEqual(value, "https://package-src.example/openai/v1")
+
+    def test_codebuddy_package_auth_client_supports_relative_ai_mart_import(self) -> None:
+        install_src = self.root / "install" / "src"
+        package_dir = install_src / "codebuddy"
+        project = self.root / "project"
+        package_dir.mkdir(parents=True)
+        project.mkdir()
+        azure_module.__file__ = str(package_dir / "azure_openai_llm.py")
+        (package_dir / "ai_mart.py").write_text(
+            "class AuthClient:\n"
+            "    def authenticate_broker(self):\n"
+            "        return type('Token', (), {'access_token': 'package-relative-token'})()\n"
+            "auth_client = AuthClient()\n",
+            encoding="utf-8",
+        )
+        (package_dir / "azure_auth.py").write_text(
+            "from .ai_mart import auth_client\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return auth_client.authenticate_broker()\n",
+            encoding="utf-8",
+        )
+
+        token = load_auth_token(auth_client_path="azure_auth:AzureAuthClient", project_root=project)
+
+        self.assertEqual(token.value, "package-relative-token")
+
+    def test_codebuddy_src_auth_client_supports_relative_ai_mart_import(self) -> None:
+        install_src = self.root / "install" / "src"
+        package_dir = install_src / "codebuddy"
+        project = self.root / "project"
+        package_dir.mkdir(parents=True)
+        project.mkdir()
+        azure_module.__file__ = str(package_dir / "azure_openai_llm.py")
+        (install_src / "ai_mart.py").write_text(
+            "class AuthClient:\n"
+            "    def authenticate_broker(self):\n"
+            "        return type('Token', (), {'access_token': 'src-relative-token'})()\n"
+            "auth_client = AuthClient()\n",
+            encoding="utf-8",
+        )
+        (install_src / "azure_auth.py").write_text(
+            "from .ai_mart import auth_client\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return auth_client.authenticate_broker()\n",
+            encoding="utf-8",
+        )
+
+        token = load_auth_token(auth_client_path="azure_auth:AzureAuthClient", project_root=project)
+
+        self.assertEqual(token.value, "src-relative-token")
 
     def test_project_src_package_imports_are_available(self) -> None:
         package = self.root / "src" / "broker"
