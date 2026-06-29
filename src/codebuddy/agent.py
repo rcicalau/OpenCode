@@ -56,6 +56,7 @@ from .search import Searcher
 from .session import PlanItem, SessionLedger
 from .steering import SteeringInbox
 from .tool_calls import (
+    MALFORMED_TOOL_CALL_NAME,
     ParsedToolCall,
     parse_text_edit_blocks,
     parse_text_tool_calls,
@@ -66,6 +67,9 @@ from .tool_runtime import ToolRuntime
 from .validation import ValidationHarness
 from .workplan import WorkItem, WorkPlan, WorkPlanManager
 from .errors import CodeBuddyError, ConfirmationRequired
+
+
+READ_ONLY_TOOL_NAMES = {"explore_project", "read_text", "search"}
 
 
 @dataclass(slots=True)
@@ -292,7 +296,8 @@ class CodeBuddyAgent:
                 "system",
                 "You are Code Buddy. Be concise and grounded in the current project. "
                 "Use the project context before answering questions about the repository. "
-                "If context is insufficient, inspect files with tools instead of guessing. "
+                "If context is insufficient, call explore_project first, then inspect files with read/search tools instead of guessing. "
+                "In chat or scope mode, stay read-only: explore, search, and read are allowed; edits and shell commands are not. "
                 "For execution tasks, keep calling tools until the objective is complete or blocked. "
                 "For edits, do not use native JSON tool calls. Use raw edit blocks so multiline code cannot break JSON:\n"
                 "<codebuddy_replace path=\"relative/path.py\">\n<old>\nexact old text\n</old>\n<new>\nexact new text\n</new>\n</codebuddy_replace>\n"
@@ -544,7 +549,29 @@ class CodeBuddyAgent:
         return calls
 
     def _run_tool_calls(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[ToolResult]:
-        return self.tool_runtime.run_structured(calls, events)
+        if self.ledger.mode not in {"chat", "scope"}:
+            return self.tool_runtime.run_structured(calls, events)
+        allowed: list[ParsedToolCall] = []
+        results: list[ToolResult] = []
+        for call in calls:
+            if call.name in READ_ONLY_TOOL_NAMES or call.name == MALFORMED_TOOL_CALL_NAME:
+                allowed.append(call)
+                continue
+            detail = f"{call.name}: denied in {self.ledger.mode} mode; use /do or an execute prompt for mutations"
+            events.append(AgentEvent("tool", "Tool", detail, "failed"))
+            results.append(
+                ToolResult(
+                    call.name,
+                    False,
+                    f"{call.name} denied: {self.ledger.mode} mode is read-only. Continue with explore_project, search, or read_text.",
+                    error_type="read_only_mode",
+                    retryable=False,
+                    next_action="continue_read_only_or_ask_for_execute_mode",
+                )
+            )
+        if allowed:
+            results.extend(self.tool_runtime.run_structured(allowed, events))
+        return results
 
     def _validate_work_slice(self, events: list[AgentEvent], rel_paths: list[str] | None = None) -> bool:
         if not self.validation:
@@ -641,6 +668,24 @@ class CodeBuddyAgent:
                     },
                 },
             },
+            "explore": {
+                "type": "function",
+                "function": {
+                    "name": "explore_project",
+                    "description": (
+                        "Build a read-only project exploration map: key files, stack signals, modules, "
+                        "entrypoints, tests, symbols, relevant files, and recommended next reads."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "focus": {"type": "string"},
+                            "max_files": {"type": "integer"},
+                            "max_symbols": {"type": "integer"},
+                        },
+                    },
+                },
+            },
             "shell": {
                 "type": "function",
                 "function": {
@@ -663,8 +708,11 @@ class CodeBuddyAgent:
             },
         }
         enabled = []
+        allowed = set(schemas)
+        if self.ledger.mode in {"chat", "scope"}:
+            allowed = {"explore", "read", "search"}
         for key, schema in schemas.items():
-            if self.enabled_tools.get(key, True):
+            if key in allowed and self.enabled_tools.get(key, True):
                 enabled.append(schema)
         return enabled
 

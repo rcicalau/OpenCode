@@ -254,6 +254,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(loaded.config["agent"]["max_tool_iterations"], 200)
         self.assertEqual(loaded.config["agent"]["max_work_items_per_prompt"], 200)
         self.assertEqual(loaded.config["agent"]["max_item_attempts"], 3)
+        self.assertTrue(loaded.config["tools"]["explore"])
 
     def test_project_context_includes_buddy_md_and_skills(self) -> None:
         ensure_buddy_scaffold(self.root)

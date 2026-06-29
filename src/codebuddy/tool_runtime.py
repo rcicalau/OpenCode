@@ -8,6 +8,7 @@ from .command_broker import CommandBroker
 from .edit_broker import EditBroker
 from .errors import ConfirmationRequired, DeniedByPolicy
 from .events import AgentEvent
+from .explorer import explore_project
 from .hashutil import sha256_bytes
 from .search import Searcher
 from .session import SessionLedger
@@ -67,6 +68,8 @@ class ToolRuntime:
                 results.append(self._read_text(call, events))
             elif call.name == "search":
                 results.append(self._search(call, events))
+            elif call.name == "explore_project":
+                results.append(self._explore_project(call, events))
             elif call.name == "edit_exact_replace":
                 results.append(self._edit_exact_replace(call, events))
             elif call.name == "create_file":
@@ -198,6 +201,44 @@ class ToolRuntime:
                 "pattern": pattern,
                 "matches": len(matches),
                 "paths": sorted({match.path for match in matches}),
+            },
+        )
+
+    def _explore_project(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
+        focus = str(call.arguments.get("focus", ""))
+        max_files = int(call.arguments.get("max_files", 800))
+        max_symbols = int(call.arguments.get("max_symbols", 160))
+        try:
+            exploration = explore_project(
+                self.project_root,
+                self.edit_broker.policy,
+                focus=focus,
+                max_files=max_files,
+                max_symbols=max_symbols,
+            )
+        except Exception as exc:
+            events.append(AgentEvent("explore", "Explore", str(exc), "failed"))
+            return ToolResult(
+                "explore_project",
+                False,
+                f"explore_project failed: {exc}",
+                error_type="explore_failed",
+                retryable=True,
+                next_action="try_narrower_focus",
+            )
+        self.mark_plan("Gather context", "completed")
+        events.append(AgentEvent("explore", "Explore", f"{exploration.files_scanned} files, {exploration.symbols_count} symbols"))
+        return ToolResult(
+            "explore_project",
+            True,
+            exploration.text,
+            metadata={
+                "files_scanned": exploration.files_scanned,
+                "symbols_count": exploration.symbols_count,
+                "key_files": exploration.key_files,
+                "relevant_files": exploration.relevant_files,
+                "entrypoints": exploration.entrypoints,
+                "stack_signals": exploration.stack_signals,
             },
         )
 
@@ -365,6 +406,7 @@ class ToolRuntime:
         tool_map = {
             "read_text": "read",
             "search": "search",
+            "explore_project": "explore",
             "edit_exact_replace": "edit",
             "create_file": "edit",
             "rewrite_file": "edit",
@@ -393,6 +435,7 @@ def _diff_stat(diff: str) -> str:
 TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "read_text": {"path": str},
     "search": {"pattern": str},
+    "explore_project": {},
     "edit_exact_replace": {"path": str, "old": str, "new": str},
     "create_file": {"path": str, "content": str},
     "rewrite_file": {"path": str, "content": str, "expected_hash": str},
@@ -404,6 +447,7 @@ TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
 
 
 OPTIONAL_TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
+    "explore_project": {"focus": str, "max_files": int, "max_symbols": int},
     "edit_exact_replace": {"expected_hash": str},
     "create_file": {"overwrite": bool, "expected_hash": str},
     "apply_unified_diff": {"expected_hash": str},

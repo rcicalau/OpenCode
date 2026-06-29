@@ -62,6 +62,35 @@ class ToolResultTests(unittest.TestCase):
         self.assertTrue(results[0].metadata["recovered"])
         self.assertIn("auto recovered", results[0].content)
 
+    def test_explore_project_returns_repo_overview_without_sensitive_files(self) -> None:
+        (self.root / "README.md").write_text("# Widget Service\n\nProcesses widget invoices.\n", encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname = \"widget-service\"\n", encoding="utf-8")
+        src = self.root / "src"
+        src.mkdir()
+        (src / "app.py").write_text(
+            "from fastapi import FastAPI\n\napp = FastAPI()\n\nclass WidgetRunner:\n    pass\n",
+            encoding="utf-8",
+        )
+        tests = self.root / "tests"
+        tests.mkdir()
+        (tests / "test_app.py").write_text("def test_widget():\n    assert True\n", encoding="utf-8")
+        (self.root / ".env").write_text("SECRET=widget-invoices\n", encoding="utf-8")
+
+        results = self.runtime.run_structured([ParsedToolCall("explore_project", {"focus": "widget invoices"})], [])
+
+        self.assertTrue(results[0].ok)
+        self.assertEqual(results[0].tool, "explore_project")
+        self.assertIn("Project exploration", results[0].content)
+        self.assertIn("README.md", results[0].content)
+        self.assertIn("pyproject.toml", results[0].content)
+        self.assertIn("src/app.py", results[0].content)
+        self.assertIn("tests/test_app.py", results[0].content)
+        self.assertIn("WidgetRunner", results[0].content)
+        self.assertIn("FastAPI", results[0].content)
+        self.assertNotIn(".env", results[0].content)
+        self.assertNotIn("SECRET", results[0].content)
+        self.assertGreaterEqual(results[0].metadata["files_scanned"], 4)
+
     def test_invalid_tool_arguments_return_structured_schema_error(self) -> None:
         results = self.runtime.run_structured([ParsedToolCall("read_text", {})], [])
 

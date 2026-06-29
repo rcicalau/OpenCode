@@ -313,6 +313,45 @@ def handle():
         self.assertEqual(len(agent.llm.calls), 3)
         self.assertEqual([event.title for event in result.events], ["Context", "Search", "Read"])
 
+    def test_agent_exposes_and_runs_explore_project_tool(self) -> None:
+        (self.root / "README.md").write_text("# Widget Service\n\nProcesses widget invoices.\n", encoding="utf-8")
+        (self.root / "pyproject.toml").write_text("[project]\nname = \"widget-service\"\n", encoding="utf-8")
+        src = self.root / "src"
+        src.mkdir()
+        (src / "app.py").write_text("class WidgetRunner:\n    pass\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                LLMResponse("", tool_calls=[ParsedToolCall("explore_project", {"focus": "widget invoices"})]),
+                "The project is a widget service that processes invoices.",
+            ]
+        )
+
+        result = agent.handle("/scope Explore this repository")
+
+        tool_names = [tool["function"]["name"] for tool in agent.llm.tool_requests[0]]
+        self.assertIn("explore_project", tool_names)
+        self.assertNotIn("run_command", tool_names)
+        self.assertNotIn("validate", tool_names)
+        self.assertIn("widget service", result.message.lower())
+        self.assertTrue(any(event.title == "Explore" for event in result.events))
+        self.assertIn("Project exploration", "\n".join(message.content for message in agent.llm.calls[1]))
+
+    def test_scope_mode_blocks_mutating_tool_calls_even_if_model_emits_them(self) -> None:
+        agent = self.make_agent(
+            [
+                LLMResponse("", tool_calls=[ParsedToolCall("create_file", {"path": "oops.txt", "content": "bad"})]),
+                "I stayed read-only.",
+            ]
+        )
+
+        result = agent.handle("/scope Explore only; do not write code")
+
+        self.assertIn("read-only", "\n".join(message.content for message in agent.llm.calls[1]))
+        self.assertIn("I stayed read-only", result.message)
+        self.assertFalse((self.root / "oops.txt").exists())
+        self.assertEqual(self.ledger.files_edited, [])
+        self.assertTrue(any(event.title == "Tool" and event.status == "failed" for event in result.events))
+
     def test_missing_read_text_file_is_tool_failure_not_crash(self) -> None:
         (self.root / "README.md").write_text("real file\n", encoding="utf-8")
         agent = self.make_agent(

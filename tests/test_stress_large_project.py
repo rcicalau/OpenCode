@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.compaction import compact_ledger
+from codebuddy.explorer import explore_project
 from codebuddy.indexer import Indexer
 from codebuddy.paths import PathPolicy
 from codebuddy.project_context import build_project_context
@@ -67,6 +68,30 @@ class LargeProjectStressTests(unittest.TestCase):
             self.assertIsNotNone(workplan)
             self.assertIn("huge.py", [item.target_path for item in workplan.items])
             self.assertIn("[truncated]", read)
+
+    def test_explore_project_scales_without_sensitive_ingest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = root / "pkg"
+            package.mkdir()
+            for index in range(220):
+                (package / f"module_{index}.py").write_text(
+                    f"import pytest\n\nclass Thing{index}:\n    def value(self):\n        return {index}\n\nTARGET_{index} = {index}\n",
+                    encoding="utf-8",
+                )
+            (root / "README.md").write_text("# Large App\n\nTARGET_219 handles the final case.\n", encoding="utf-8")
+            (root / ".env").write_text("SECRET=TARGET_219\n", encoding="utf-8")
+            policy = PathPolicy(root)
+
+            exploration = explore_project(root, policy, focus="TARGET_219 final case", max_files=300, max_symbols=80)
+
+            self.assertEqual(exploration.files_scanned, 221)
+            self.assertIn("Project exploration", exploration.text)
+            self.assertIn("Thing219", exploration.text)
+            self.assertIn("pytest", exploration.text)
+            self.assertNotIn(".env", exploration.text)
+            self.assertNotIn("SECRET", exploration.text)
+            self.assertLess(len(exploration.text), 60000)
 
 
 if __name__ == "__main__":

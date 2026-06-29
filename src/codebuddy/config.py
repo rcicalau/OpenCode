@@ -100,6 +100,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tools": {
         "read": True,
         "search": True,
+        "explore": True,
         "edit": True,
         "shell": True,
         "git": True,
