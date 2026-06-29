@@ -42,6 +42,7 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertIn("Microsoft\\WindowsApps", buddy_uninstaller.read_text(encoding="utf-8"))
         self.assertIn("pip uninstall -y codebuddy", buddy_uninstaller.read_text(encoding="utf-8"))
         self.assertNotIn("\npy ", buddy_uninstaller.read_text(encoding="utf-8"))
+        self.assertIn('pip install -r "%BUDDY_HOME%requirements.txt"', installer.read_text(encoding="utf-8"))
         self.assertIn('call "%BUDDY_HOME%buddy.cmd" %%*', installer.read_text(encoding="utf-8"))
         self.assertIn('\nbuddy = "codebuddy.cli:main"', pyproject.read_text(encoding="utf-8"))
 

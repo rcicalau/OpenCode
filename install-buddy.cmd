@@ -14,10 +14,23 @@ if not defined BUDDY_PYTHON_OK (
     exit /b 1
 )
 
-echo Installing Code Buddy Python package and terminal UI dependencies...
+echo Installing Code Buddy dependencies from requirements.txt...
+if exist "%BUDDY_HOME%requirements.txt" (
+    "%BUDDY_PYTHON%" -m pip install -r "%BUDDY_HOME%requirements.txt"
+    if errorlevel 1 (
+        echo Failed to install Code Buddy requirements.
+        exit /b 1
+    )
+) else (
+    echo Missing requirements.txt:
+    echo   %BUDDY_HOME%requirements.txt
+    exit /b 1
+)
+
+echo Installing Code Buddy Python package...
 "%BUDDY_PYTHON%" -m pip install -e "%BUDDY_HOME%."
 if errorlevel 1 (
-    echo Failed to install Code Buddy dependencies.
+    echo Failed to install Code Buddy package.
     exit /b 1
 )
 
