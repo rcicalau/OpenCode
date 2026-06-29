@@ -37,6 +37,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "token_method": "get_token",
                 "model": "openai/gpt-5.4",
                 "verify_ssl": False,
+                "auth_refresh_retries": 1,
             },
             "openai": {
                 "base_url": "https://api.openai.com/v1",

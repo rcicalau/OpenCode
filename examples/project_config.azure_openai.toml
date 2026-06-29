@@ -16,3 +16,4 @@ auth_client = "azure_auth:AzureAuthClient"
 token_method = "get_token"
 model = "openai/gpt-5.4"
 verify_ssl = false
+auth_refresh_retries = 1

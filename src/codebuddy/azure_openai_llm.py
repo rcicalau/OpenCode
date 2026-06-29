@@ -29,6 +29,7 @@ class AzureAuthOpenAIClient:
         project_root: Path | None = None,
         verify_ssl: bool = False,
         timeout_seconds: int = 300,
+        auth_refresh_retries: int = 1,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -37,6 +38,9 @@ class AzureAuthOpenAIClient:
         self.project_root = project_root
         self.verify_ssl = verify_ssl
         self.timeout_seconds = timeout_seconds
+        if isinstance(auth_refresh_retries, bool) or not isinstance(auth_refresh_retries, int) or auth_refresh_retries < 0:
+            raise ValueError("auth_refresh_retries must be a non-negative integer")
+        self.auth_refresh_retries = auth_refresh_retries
         self._auth_client = None
 
     @classmethod
@@ -56,6 +60,7 @@ class AzureAuthOpenAIClient:
         timeout_seconds = provider.get("timeout_seconds", 300)
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
             raise ConfigError("provider timeout_seconds must be a positive number")
+        auth_refresh_retries = _provider_non_negative_int(provider, "auth_refresh_retries", 1)
         return cls(
             base_url=str(base_url),
             model=str(provider.get("model", model)),
@@ -64,9 +69,35 @@ class AzureAuthOpenAIClient:
             project_root=project_root,
             verify_ssl=bool(provider.get("verify_ssl", False)),
             timeout_seconds=int(timeout_seconds),
+            auth_refresh_retries=auth_refresh_retries,
         )
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]] | None = None) -> LLMResponse:
+        attempts = self.auth_refresh_retries + 1
+        last_auth_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                response = self._complete_once(messages, tools)
+                break
+            except Exception as exc:
+                if not _is_unauthorized_error(exc) or attempt >= attempts - 1:
+                    raise
+                last_auth_error = exc
+                self._auth_client = None
+        else:
+            raise last_auth_error or RuntimeError("Azure auth refresh failed")
+
+        message = response.choices[0].message
+        message_dict = _model_dump(message)
+        raw = _model_dump(response)
+        content = message_dict.get("content")
+        return LLMResponse(
+            content="" if content is None else str(content),
+            raw=raw,
+            tool_calls=parse_native_tool_calls(message_dict, tolerate_malformed=True),
+        )
+
+    def _complete_once(self, messages: list[Message], tools: list[dict[str, Any]] | None = None):
         http_client = None
         client = None
         try:
@@ -85,16 +116,7 @@ class AzureAuthOpenAIClient:
                 client.close()
             elif http_client is not None and hasattr(http_client, "close"):
                 http_client.close()
-
-        message = response.choices[0].message
-        message_dict = _model_dump(message)
-        raw = _model_dump(response)
-        content = message_dict.get("content")
-        return LLMResponse(
-            content="" if content is None else str(content),
-            raw=raw,
-            tool_calls=parse_native_tool_calls(message_dict, tolerate_malformed=True),
-        )
+        return response
 
     def _token(self) -> str:
         token = load_auth_token(
@@ -312,3 +334,22 @@ def _model_dump(value: Any) -> dict[str, Any]:
         "content": getattr(value, "content", None),
         "tool_calls": getattr(value, "tool_calls", None),
     }
+
+
+def _provider_non_negative_int(provider: dict[str, Any], key: str, default: int) -> int:
+    value = provider.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigError(f"provider {key} must be a non-negative integer")
+    return value
+
+
+def _is_unauthorized_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", getattr(exc, "code", None))
+    if str(status_code) == "401":
+        return True
+    response = getattr(exc, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if str(response_status) == "401":
+        return True
+    text = str(exc).lower()
+    return "401" in text and any(marker in text for marker in ("unauthor", "auth", "token", "expired"))

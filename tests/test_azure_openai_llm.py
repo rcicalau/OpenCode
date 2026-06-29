@@ -131,6 +131,135 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(self.created_clients[0].requests[0]["tools"], [{"type": "function"}])
         self.assertTrue(self.created_clients[0].closed)
 
+    def test_adapter_refreshes_auth_client_and_retries_once_after_unauthorized(self) -> None:
+        created_clients = self.created_clients
+        created_http_clients = self.created_http_clients
+
+        class FakeHttpClient:
+            def __init__(self, *, verify=True, timeout=None):
+                self.verify = verify
+                self.timeout = timeout
+                self.closed = False
+                created_http_clients.append(self)
+
+            def close(self):
+                self.closed = True
+
+        class FakeUnauthorized(Exception):
+            status_code = 401
+
+        class FakeMessage:
+            content = "done after refresh"
+
+            def model_dump(self):
+                return {"content": "done after refresh", "tool_calls": []}
+
+        class FakeResponse:
+            choices = [types.SimpleNamespace(message=FakeMessage())]
+
+            def model_dump(self):
+                return {"choices": [{"message": {"content": "done after refresh"}}]}
+
+        class FakeOpenAI:
+            def __init__(self, *, base_url, api_key, http_client):
+                self.base_url = base_url
+                self.api_key = api_key
+                self.http_client = http_client
+                self.closed = False
+                created_clients.append(self)
+                self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+            def create(self, **_kwargs):
+                if self.api_key == "expired-token":
+                    raise FakeUnauthorized("401 token expired")
+                return FakeResponse()
+
+            def close(self):
+                self.closed = True
+                self.http_client.close()
+
+        openai_module = types.ModuleType("openai")
+        openai_module.OpenAI = FakeOpenAI
+        httpx_module = types.ModuleType("httpx")
+        httpx_module.Client = FakeHttpClient
+        sys.modules["openai"] = openai_module
+        sys.modules["httpx"] = httpx_module
+        counter_path = self.root / "token-count.txt"
+        (self.root / "auth.py").write_text(
+            "from pathlib import Path\n"
+            f"counter_path = Path({str(counter_path)!r})\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        count = int(counter_path.read_text()) if counter_path.exists() else 0\n"
+            "        counter_path.write_text(str(count + 1))\n"
+            "        return 'expired-token' if count == 0 else 'fresh-token'\n",
+            encoding="utf-8",
+        )
+        client = AzureAuthOpenAIClient(
+            base_url="https://aimark.example/openai/v1",
+            model="openai/gpt-5.4",
+            auth_client="auth:AzureAuthClient",
+            project_root=self.root,
+        )
+
+        response = client.complete([Message("user", "hello")])
+
+        self.assertEqual(response.content, "done after refresh")
+        self.assertEqual([item.api_key for item in self.created_clients], ["expired-token", "fresh-token"])
+        self.assertTrue(all(item.closed for item in self.created_clients))
+        self.assertTrue(all(item.closed for item in self.created_http_clients))
+
+    def test_adapter_stops_after_configured_auth_refresh_retries(self) -> None:
+        created_clients = self.created_clients
+
+        class FakeHttpClient:
+            def __init__(self, *, verify=True, timeout=None):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class FakeUnauthorized(Exception):
+            status_code = 401
+
+        class FakeOpenAI:
+            def __init__(self, *, base_url, api_key, http_client):
+                self.api_key = api_key
+                self.http_client = http_client
+                self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+                created_clients.append(self)
+
+            def create(self, **_kwargs):
+                raise FakeUnauthorized("401 token expired")
+
+            def close(self):
+                self.http_client.close()
+
+        openai_module = types.ModuleType("openai")
+        openai_module.OpenAI = FakeOpenAI
+        httpx_module = types.ModuleType("httpx")
+        httpx_module.Client = FakeHttpClient
+        sys.modules["openai"] = openai_module
+        sys.modules["httpx"] = httpx_module
+        (self.root / "auth.py").write_text(
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return 'still-expired-token'\n",
+            encoding="utf-8",
+        )
+        client = AzureAuthOpenAIClient(
+            base_url="https://aimark.example/openai/v1",
+            model="openai/gpt-5.4",
+            auth_client="auth:AzureAuthClient",
+            project_root=self.root,
+            auth_refresh_retries=1,
+        )
+
+        with self.assertRaises(FakeUnauthorized):
+            client.complete([Message("user", "hello")])
+
+        self.assertEqual(len(self.created_clients), 2)
+
     def test_auth_check_loads_project_auth_client(self) -> None:
         (self.root / "auth.py").write_text(
             "class AzureAuthClient:\n"
@@ -208,6 +337,7 @@ class AzureOpenAILlmTests(unittest.TestCase):
                 "auth_client": "azure_auth:AzureAuthClient",
                 "token_method": "get_token",
                 "model": "openai/gpt-5.4",
+                "auth_refresh_retries": 2,
             },
             "openai/gpt-5.4",
             project_root=self.root,
@@ -215,6 +345,22 @@ class AzureOpenAILlmTests(unittest.TestCase):
 
         self.assertEqual(client.base_url, "https://aimark.example/openai/v1")
         self.assertEqual(client.timeout_seconds, 300)
+        self.assertEqual(client.auth_refresh_retries, 2)
+
+    def test_provider_config_rejects_invalid_auth_refresh_retry_count(self) -> None:
+        with self.assertRaises(ConfigError) as context:
+            AzureAuthOpenAIClient.from_provider_config(
+                {
+                    "base_url": "https://aimark.example/openai/v1",
+                    "auth_client": "azure_auth:AzureAuthClient",
+                    "token_method": "get_token",
+                    "auth_refresh_retries": -1,
+                },
+                "openai/gpt-5.4",
+                project_root=self.root,
+            )
+
+        self.assertIn("auth_refresh_retries", str(context.exception))
 
     def test_provider_config_loads_base_url_from_project_src_import(self) -> None:
         src = self.root / "src"

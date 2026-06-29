@@ -60,6 +60,7 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(provider["auth_client"], "azure_auth:AzureAuthClient")
         self.assertEqual(provider["token_method"], "get_token")
         self.assertFalse(provider["verify_ssl"])
+        self.assertEqual(provider["auth_refresh_retries"], 1)
 
     def test_perplexity_provider_default_uses_base_url_and_endpoint_path(self) -> None:
         loaded = load_config(self.root)
