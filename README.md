@@ -54,6 +54,20 @@ With no arguments, `buddy` starts chat mode bound to the folder you launched it 
 
 You should not need to set `PYTHONPATH` manually.
 
+To uninstall the global `buddy` command:
+
+```cmd
+buddy-uninstall.cmd
+```
+
+You can also run:
+
+```cmd
+buddy-install.cmd uninstall
+```
+
+The uninstaller removes the WindowsApps launcher that points to this checkout and attempts to uninstall the editable Python package. It does not remove project-local `.buddy` folders.
+
 ## Terminal Experience
 
 Interactive chat uses a colorized terminal UI:

@@ -12,6 +12,7 @@ class SetupArtifactsTests(unittest.TestCase):
         direct_runner = root / "buddy.cmd"
         installer = root / "install-buddy.cmd"
         buddy_installer = root / "buddy-install.cmd"
+        buddy_uninstaller = root / "buddy-uninstall.cmd"
         pyproject = root / "pyproject.toml"
         bundled_auth = root / "src" / "codebuddy" / "azure_auth.py"
         ai_mart_auth = root / "src" / "codebuddy" / "ai_mart.py"
@@ -21,6 +22,7 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertTrue(direct_runner.exists())
         self.assertTrue(installer.exists())
         self.assertTrue(buddy_installer.exists())
+        self.assertTrue(buddy_uninstaller.exists())
         self.assertFalse(bundled_auth.exists())
         self.assertFalse(ai_mart_auth.exists())
 
@@ -36,6 +38,10 @@ class SetupArtifactsTests(unittest.TestCase):
         self.assertIn('set "CODEBUDDY_START_DIR=%CD%"', direct_runner.read_text(encoding="utf-8"))
         self.assertNotIn("if not defined CODEBUDDY_START_DIR", direct_runner.read_text(encoding="utf-8"))
         self.assertIn("install-buddy.cmd", buddy_installer.read_text(encoding="utf-8"))
+        self.assertIn("buddy-uninstall.cmd", buddy_installer.read_text(encoding="utf-8"))
+        self.assertIn("Microsoft\\WindowsApps", buddy_uninstaller.read_text(encoding="utf-8"))
+        self.assertIn("pip uninstall -y codebuddy", buddy_uninstaller.read_text(encoding="utf-8"))
+        self.assertNotIn("\npy ", buddy_uninstaller.read_text(encoding="utf-8"))
         self.assertIn('call "%BUDDY_HOME%buddy.cmd" %%*', installer.read_text(encoding="utf-8"))
         self.assertIn('\nbuddy = "codebuddy.cli:main"', pyproject.read_text(encoding="utf-8"))
 
