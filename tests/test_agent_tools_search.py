@@ -190,6 +190,35 @@ def handle():
         self.assertEqual([event.title for event in result.events], ["Context", "Edit", "Validate"])
         self.assertEqual(self.ledger.objective_state, COMPLETE)
 
+    def test_execute_does_not_auto_validate_stale_session_edits_without_current_edit(self) -> None:
+        bad = self.root / "bad.py"
+        bad.write_text("def broken(:\n", encoding="utf-8")
+        self.ledger.files_edited.append("bad.py")
+        self.ledger.validation_state.clear()
+        agent = self.make_agent(["No file changes were needed."])
+
+        result = agent.handle("Do nothing for this objective")
+
+        self.assertNotIn("Validation failed after edits", result.message)
+        self.assertFalse(any(event.kind == "validate" for event in result.events))
+        self.assertEqual(self.ledger.validation_state, {})
+        self.assertEqual(self.ledger.objective_state, COMPLETE)
+
+    def test_execute_auto_validates_current_edit_even_with_previous_validation_state(self) -> None:
+        target = self.root / "app.py"
+        target.write_text("def f():\n    return 1\n", encoding="utf-8")
+        self.ledger.files_edited.append("app.py")
+        self.ledger.validation_state = {"passed": False, "failures": ["old failure"]}
+        tool_call = '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"app.py","old":"return 1","new":"return 2"}}</tool_call>'
+        agent = self.make_agent([tool_call, "Edited app.py."])
+
+        result = agent.handle("Change f to return 2 again")
+
+        self.assertIn("Edited app.py", result.message)
+        self.assertTrue(any(event.kind == "validate" for event in result.events))
+        self.assertTrue(self.ledger.validation_state["passed"])
+        self.assertEqual(self.ledger.validation_state["touched_files"], ["app.py"])
+
     def test_execute_auto_validation_allows_python_launcher_version_flag(self) -> None:
         target = self.root / "app.py"
         target.write_text("def f():\n    return 1\n", encoding="utf-8")

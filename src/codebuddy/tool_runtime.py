@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,8 @@ class ToolRuntime:
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
         mark_plan=None,
+        record_changed_file: Callable[[str], None] | None = None,
+        current_changed_files: Callable[[], list[str]] | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.ledger = ledger
@@ -36,6 +39,8 @@ class ToolRuntime:
         self.validation = validation
         self.enabled_tools = enabled_tools or {}
         self.mark_plan = mark_plan or (lambda _step, _status: None)
+        self.record_changed_file = record_changed_file or (lambda _path: None)
+        self.current_changed_files = current_changed_files
 
     def run(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[str]:
         return [result.to_prompt() for result in self.run_structured(calls, events)]
@@ -254,6 +259,7 @@ class ToolRuntime:
         rel = result.path.relative_to(self.project_root).as_posix()
         if rel not in self.ledger.files_edited:
             self.ledger.files_edited.append(rel)
+        self.record_changed_file(rel)
         self.ledger.completed_actions.append(f"{verb} {rel}")
         diff_stat = _diff_stat(result.diff)
         events.append(AgentEvent("edit", event_title, f"{rel} ({diff_stat})", body=result.diff))
@@ -305,7 +311,7 @@ class ToolRuntime:
         if not self.validation:
             return ToolResult("validate", False, "validate failed: validation harness unavailable", error_type="tool_unavailable")
         try:
-            touched = [self.project_root / path for path in self.ledger.files_edited]
+            touched = self._validation_targets()
             validation = self.validation.validate(touched, expected_files=touched)
         except Exception as exc:
             events.append(AgentEvent("validate", "Validate", str(exc), "failed"))
@@ -328,6 +334,12 @@ class ToolRuntime:
                 "unexpected_files": validation.unexpected_files,
             },
         )
+
+    def _validation_targets(self) -> list[Path]:
+        rel_paths = self.current_changed_files() if self.current_changed_files else list(self.ledger.files_edited)
+        if not rel_paths:
+            rel_paths = list(self.ledger.files_edited)
+        return [self.project_root / path for path in rel_paths]
 
     @staticmethod
     def _malformed_tool_call(call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:

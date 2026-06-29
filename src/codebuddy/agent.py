@@ -217,6 +217,7 @@ class CodeBuddyAgent:
             raise ValueError("rate_limit_backoff_seconds must be non-negative")
         self.rate_limit_retries = rate_limit_retries
         self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
+        self._current_changed_files: list[str] = []
         self.tool_runtime = ToolRuntime(
             self.project_root,
             self.ledger,
@@ -226,9 +227,12 @@ class CodeBuddyAgent:
             self.validation,
             self.enabled_tools,
             self._mark_plan,
+            self._record_changed_file,
+            self._current_changed_files_snapshot,
         )
 
     def handle(self, prompt: str, event_sink=None) -> AgentResult:
+        self._current_changed_files = []
         mode = route_intent(prompt)
         self.ledger.mode = mode
         self.ledger.objective_state = IDLE if mode != "execute" else PLANNING
@@ -271,11 +275,13 @@ class CodeBuddyAgent:
                 self.ledger.objective = work_plan.objective
                 events.append(AgentEvent("plan", "Plan", workplans.summary(work_plan)))
                 return self._handle_work_plan(workplans, work_plan, project_context.text, events)
+        validate_events_before = _validation_event_count(events)
         message = self._run_model_loop(prompt, project_context.text, events)
-        validation_passed = self._auto_validate_after_edits(events) if mode == "execute" else None
+        validated_during_prompt = _validation_event_count(events) > validate_events_before
+        validation_passed = self._auto_validate_after_edits(events, validated_during_prompt) if mode == "execute" else None
         if validation_passed is False:
             self.ledger.objective_state = BLOCKED
-            message = (message.strip() + "\n\n" if message.strip() else "") + "Validation failed after edits. Review validation output before continuing."
+            message = (message.strip() + "\n\n" if message.strip() else "") + self._validation_failed_message()
         elif mode == "execute" and self.ledger.objective_state not in {APPROVAL_WAIT, BLOCKED}:
             self.ledger.objective_state = COMPLETE
         return AgentResult(mode=mode, message=message, changed_files=list(self.ledger.files_edited), events=events)
@@ -333,10 +339,10 @@ class CodeBuddyAgent:
                 message = visible_content
                 break
             signature = _tool_call_signature(calls)
-            edited_before = set(self.ledger.files_edited)
+            changed_count_before = len(self._current_changed_files)
             tool_results = self._run_tool_calls(calls, events)
-            edited_after = set(self.ledger.files_edited)
-            if signature == repeated_signature and edited_after == edited_before:
+            changed_count_after = len(self._current_changed_files)
+            if signature == repeated_signature and changed_count_after == changed_count_before:
                 repeated_count += 1
             else:
                 repeated_signature = signature
@@ -443,7 +449,6 @@ class CodeBuddyAgent:
         project_context: str,
         events: list[AgentEvent],
     ) -> tuple[str, bool]:
-        before_edited = set(self.ledger.files_edited)
         last_message = ""
         while item.attempts < self.max_item_attempts:
             self.ledger.objective_state = WORKING
@@ -454,14 +459,18 @@ class CodeBuddyAgent:
             self.ledger.pending_next_step = item.label
             events.append(AgentEvent("work", "Work", f"{item.label} attempt {item.attempts}/{self.max_item_attempts}"))
 
+            changed_count_before = len(self._current_changed_files)
             prompt = self._with_active_steering(manager.item_prompt(plan, item))
             last_message = self._run_model_loop(prompt, project_context, events)
             if self.ledger.objective_state == APPROVAL_WAIT:
                 manager.save(plan)
                 return last_message, False
 
-            changed_now = [path for path in self.ledger.files_edited if path not in before_edited]
-            validation_passed = self._validate_work_slice(events)
+            changed_now = self._current_changed_files[changed_count_before:]
+            if not changed_now:
+                validation_passed = True
+            else:
+                validation_passed = self._validate_work_slice(events, changed_now)
             item.validation_passed = validation_passed
             required_change = self._item_required_change_done(item, changed_now)
             if validation_passed and required_change:
@@ -537,30 +546,51 @@ class CodeBuddyAgent:
     def _run_tool_calls(self, calls: list[ParsedToolCall], events: list[AgentEvent]) -> list[ToolResult]:
         return self.tool_runtime.run_structured(calls, events)
 
-    def _validate_work_slice(self, events: list[AgentEvent]) -> bool:
+    def _validate_work_slice(self, events: list[AgentEvent], rel_paths: list[str] | None = None) -> bool:
         if not self.validation:
             return True
-        touched = [self.project_root / path for path in self.ledger.files_edited]
+        touched_rel_paths = list(dict.fromkeys(rel_paths if rel_paths is not None else self._current_changed_files))
+        if not touched_rel_paths:
+            return True
+        touched = [self.project_root / path for path in touched_rel_paths]
         validation = self.validation.validate(touched, expected_files=touched)
-        self.ledger.validation_state = {"passed": validation.passed, "failures": validation.failures}
+        self.ledger.validation_state = {
+            "passed": validation.passed,
+            "failures": validation.failures,
+            "touched_files": validation.touched_files,
+            "unexpected_files": validation.unexpected_files,
+        }
         self._mark_plan("Validate outcome", "completed" if validation.passed else "pending")
         detail = "passed" if validation.passed else f"failed ({len(validation.failures)} failures)"
         events.append(AgentEvent("validate", "Validate", detail, "done" if validation.passed else "failed"))
         return validation.passed
 
-    def _auto_validate_after_edits(self, events: list[AgentEvent]) -> bool | None:
-        if not self.ledger.files_edited or self.ledger.validation_state:
+    def _auto_validate_after_edits(self, events: list[AgentEvent], already_validated: bool = False) -> bool | None:
+        if already_validated or not self._current_changed_files:
             return None
         return self._validate_work_slice(events)
 
     def _item_required_change_done(self, item: WorkItem, changed_now: list[str]) -> bool:
         if item.action == "document_file":
-            return item.target_path in self.ledger.files_edited
+            return item.target_path in changed_now
         if item.action == "create_tests_for_class":
             return any(path.startswith("tests/") or Path(path).name.startswith("test_") for path in changed_now)
         if item.action == "create_tests_for_file":
             return any(path.startswith("tests/") or Path(path).name.startswith("test_") for path in changed_now)
         return bool(changed_now)
+
+    def _record_changed_file(self, rel_path: str) -> None:
+        self._current_changed_files.append(rel_path)
+
+    def _current_changed_files_snapshot(self) -> list[str]:
+        return list(self._current_changed_files)
+
+    def _validation_failed_message(self) -> str:
+        failures = self.ledger.validation_state.get("failures") if isinstance(self.ledger.validation_state, dict) else None
+        if not failures:
+            return "Validation failed after edits. Review validation output before continuing."
+        detail = "; ".join(str(failure) for failure in failures[:3])
+        return f"Validation failed after edits: {detail}"
 
     def _checkpoint_work_slice(self, item: WorkItem, changed_now: list[str], events: list[AgentEvent]) -> None:
         if not changed_now:
@@ -659,6 +689,10 @@ def _tool_call_signature(calls: list[ParsedToolCall]) -> str:
         for call in calls
     ]
     return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _validation_event_count(events: list[AgentEvent]) -> int:
+    return sum(1 for event in events if event.kind == "validate")
 
 
 def _recovery_playbook(results: list[ToolResult]) -> str:
