@@ -19,17 +19,20 @@ SLASH_COMMANDS = [
     "/a",
     "/approve",
     "/approve-branch",
+    "/ask",
     "/branch",
     "/clear",
     "/compact",
     "/commit",
     "/diff",
+    "/do",
     "/editor",
     "/exit",
     "/help",
     "/merge-ready",
     "/review",
     "/skills",
+    "/scope",
     "/steer",
     "/steer-clear",
     "/status",
@@ -143,6 +146,7 @@ class ChatRenderer:
             "validate": "green" if status == "done" else "red",
             "git": "magenta",
             "model": "magenta",
+            "thought": "bright_magenta",
         }.get(kind, "white")
         if self.console:
             prefix = self.text(f"{title:<8}", style=f"bold {style}")

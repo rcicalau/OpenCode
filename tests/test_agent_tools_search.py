@@ -623,6 +623,23 @@ def handle():
         self.assertIn("Read", seen)
         self.assertEqual(seen, [event.title for event in result.events])
 
+    def test_live_event_sink_receives_visible_reasoning_trace(self) -> None:
+        (self.root / "README.md").write_text("visible reasoning trace\n", encoding="utf-8")
+        seen = []
+        agent = self.make_agent(
+            [
+                LLMResponse("", tool_calls=[ParsedToolCall("read_text", {"path": "README.md"})]),
+                "Read it.",
+            ]
+        )
+
+        agent.handle("/ask Read README", event_sink=seen.append)
+
+        rendered = [(event.title, event.detail) for event in seen]
+        self.assertIn(("Think", "Grounding the answer in project context before responding."), rendered)
+        self.assertIn(("Think", "Reading README.md to inspect the requested context."), rendered)
+        self.assertTrue(any(title == "Observe" and "read_text succeeded" in detail for title, detail in rendered))
+
     def test_model_request_after_tool_result_times_out_with_live_event(self) -> None:
         release_provider = threading.Event()
 

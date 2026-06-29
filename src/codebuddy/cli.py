@@ -185,7 +185,8 @@ def _main(argv: list[str] | None = None) -> int:
         slash = build_slash_handler(root, ledger, manager, journal, config)
         slash_result = slash.handle(prompt)
         if slash_result.handled:
-            print(slash_result.message)
+            if slash_result.message:
+                print(slash_result.message)
             if slash_result.followup_prompt:
                 bootstrap_memory(root, ledger, config, journal)
                 renderer = ChatRenderer()
@@ -454,7 +455,8 @@ def chat_loop(
             continue
         slash_result = slash.handle(prompt)
         if slash_result.handled:
-            print(slash_result.message)
+            if slash_result.message:
+                print(slash_result.message)
             if slash_result.exit_requested:
                 return 0
             if not slash_result.followup_prompt:

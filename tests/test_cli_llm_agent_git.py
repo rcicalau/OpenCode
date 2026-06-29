@@ -726,6 +726,19 @@ model = "sonar-pro"
         finally:
             os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
 
+    def test_one_shot_ask_slash_passes_through_to_agent(self) -> None:
+        os.environ["CODEBUDDY_FAKE_LLM_RESPONSE"] = "slash ask answer"
+        try:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["/ask", "What", "is", "here?"]), 0)
+        finally:
+            os.environ.pop("CODEBUDDY_FAKE_LLM_RESPONSE", None)
+
+        output = stdout.getvalue()
+        self.assertIn("slash ask answer", output)
+        self.assertNotIn("unknown slash command", output)
+
     def test_one_shot_execution_refreshes_project_memory_after_edits(self) -> None:
         import codebuddy.cli as cli_module
 

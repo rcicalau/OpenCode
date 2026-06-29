@@ -254,6 +254,7 @@ class CodeBuddyAgent:
                     f"{project_context.files_count} files, {len(project_context.key_files)} key files, {project_context.symbols_count} symbols",
                 )
             )
+        self._emit_visible_thought(events, _initial_visible_thought(mode))
         model_context = project_context.text
         if mode == "execute":
             self.ledger.objective = prompt
@@ -353,7 +354,9 @@ class CodeBuddyAgent:
                 break
             signature = _tool_call_signature(calls)
             changed_count_before = len(self._current_changed_files)
+            self._emit_visible_thought(events, _tool_call_visible_thought(calls))
             tool_results = self._run_tool_calls(calls, events)
+            self._emit_visible_observation(events, _tool_result_visible_observation(tool_results))
             changed_count_after = len(self._current_changed_files)
             if signature == repeated_signature and changed_count_after == changed_count_before:
                 repeated_count += 1
@@ -434,6 +437,14 @@ class CodeBuddyAgent:
 
     def _has_live_event_sink(self, events: list[AgentEvent]) -> bool:
         return bool(getattr(events, "sink", None))
+
+    def _emit_visible_thought(self, events: list[AgentEvent], detail: str) -> None:
+        if self._has_live_event_sink(events) and detail:
+            events.append(AgentEvent("thought", "Think", detail))
+
+    def _emit_visible_observation(self, events: list[AgentEvent], detail: str) -> None:
+        if self._has_live_event_sink(events) and detail:
+            events.append(AgentEvent("thought", "Observe", detail))
 
     def _handle_work_plan(self, manager: WorkPlanManager, plan: WorkPlan, project_context: str, events: list[AgentEvent]) -> AgentResult:
         messages: list[str] = []
@@ -838,6 +849,92 @@ def _tool_call_signature(calls: list[ParsedToolCall]) -> str:
         for call in calls
     ]
     return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _initial_visible_thought(mode: str) -> str:
+    if mode == "execute":
+        return "Planning a safe execution: inspect context, apply brokered changes, then validate."
+    if mode == "scope":
+        return "Exploring read-only so the project can be understood before any changes."
+    return "Grounding the answer in project context before responding."
+
+
+def _tool_call_visible_thought(calls: list[ParsedToolCall]) -> str:
+    if len(calls) == 1:
+        return _single_tool_visible_thought(calls[0])
+    names = ", ".join(_display_tool_name(call.name) for call in calls[:5])
+    if len(calls) > 5:
+        names += f", +{len(calls) - 5} more"
+    return f"Using {len(calls)} tools to continue: {names}."
+
+
+def _single_tool_visible_thought(call: ParsedToolCall) -> str:
+    path = call.arguments.get("path")
+    if call.name == "read_text" and path:
+        return f"Reading {path} to inspect the requested context."
+    if call.name == "search":
+        pattern = call.arguments.get("pattern", "")
+        return f"Searching for {pattern!r} to locate relevant code."
+    if call.name == "explore_project":
+        focus = call.arguments.get("focus")
+        if focus:
+            return f"Mapping the project around {focus!r} before narrowing the files."
+        return "Mapping the project before choosing specific files."
+    if call.name in {"edit_exact_replace", "rewrite_file", "apply_unified_diff"} and path:
+        return f"Applying a guarded edit to {path}; the diff will be shown."
+    if call.name == "create_file" and path:
+        return f"Creating {path} through the edit broker; the diff will be shown."
+    if call.name == "run_command":
+        return "Running a policy-checked shell command and capturing the result."
+    if call.name == "validate":
+        return "Running validation to check whether the changes are safe."
+    if call.name.startswith("git_"):
+        return _git_tool_visible_thought(call.name)
+    if call.name == MALFORMED_TOOL_CALL_NAME:
+        return "Recovering from a malformed tool call before making further changes."
+    return f"Calling {_display_tool_name(call.name)} to continue."
+
+
+def _git_tool_visible_thought(name: str) -> str:
+    return {
+        "git_status": "Checking git status before deciding the next step.",
+        "git_diff": "Reviewing the current diff so changes stay visible.",
+        "git_log": "Reading recent git history for context.",
+        "git_remote_info": "Inspecting the remote repository configuration.",
+        "git_merge_ready": "Checking whether this branch is ready to merge.",
+        "git_commit": "Committing only agent-owned changes on the agent branch.",
+        "git_push": "Pushing the agent branch to the configured remote.",
+    }.get(name, "Inspecting git state.")
+
+
+def _tool_result_visible_observation(results: list[ToolResult]) -> str:
+    if not results:
+        return ""
+    if len(results) == 1:
+        return _single_tool_result_visible_observation(results[0])
+    ok_count = sum(1 for result in results if result.ok)
+    failed = [result for result in results if not result.ok]
+    if failed:
+        first = failed[0]
+        next_action = f"; next: {first.next_action}" if first.next_action else ""
+        return f"{ok_count}/{len(results)} tools succeeded; {first.tool} failed with {first.error_type or 'error'}{next_action}."
+    changed = sorted({path for result in results for path in result.changed_files})
+    if changed:
+        return f"All {len(results)} tools succeeded; changed {', '.join(changed[:5])}."
+    return f"All {len(results)} tools succeeded."
+
+
+def _single_tool_result_visible_observation(result: ToolResult) -> str:
+    if result.ok:
+        changed = f"; changed {', '.join(result.changed_files)}" if result.changed_files else ""
+        return f"{result.tool} succeeded{changed}."
+    next_action = f"; next: {result.next_action}" if result.next_action else ""
+    error = result.error_type or "error"
+    return f"{result.tool} failed with {error}{next_action}."
+
+
+def _display_tool_name(name: str) -> str:
+    return name.removeprefix("git_").replace("_", " ")
 
 
 def _validation_event_count(events: list[AgentEvent]) -> int:

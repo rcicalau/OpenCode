@@ -54,6 +54,10 @@ class SlashCommandHandler:
         arg = parts[1] if len(parts) > 1 else ""
         if command == "/help":
             return SlashResult(False)
+        if command in {"/ask", "/scope", "/do"}:
+            if not arg.strip():
+                return SlashResult(True, False, f"{command} needs a prompt")
+            return SlashResult(True, False, "", stripped)
         if command == "/exit":
             self.manager.save(self.ledger)
             return SlashResult(True, True, "bye")
