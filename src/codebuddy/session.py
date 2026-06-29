@@ -40,6 +40,7 @@ class SessionLedger:
     blockers: list[str] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     approvals: dict[str, Any] = field(default_factory=dict)
+    shelved_objectives: list[dict[str, Any]] = field(default_factory=list)
 
     def touch(self) -> None:
         self.updated_at = utc_now()

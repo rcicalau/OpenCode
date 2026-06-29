@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -347,6 +348,25 @@ class ToolRuntime:
                 next_action="request_user_approval",
                 metadata={"command": command},
             )
+        except DeniedByPolicy as exc:
+            if _is_recoverable_edit_deletion_attempt(command, self.ledger, str(exc)):
+                events.append(AgentEvent("shell", "Shell", f"{command}: wrong tool for edit objective", "failed"))
+                return ToolResult(
+                    "run_command",
+                    False,
+                    (
+                        f"run_command refused a shell deletion while working on an edit objective: {command}: {exc}\n"
+                        "This is a recoverable model strategy error, not a user-approval request. "
+                        "Do not delete or rewrite files through PowerShell for documentation, tests, refactors, or code edits. "
+                        "Recover by reading the target file and using the edit broker with a raw "
+                        "<codebuddy_replace>, <codebuddy_rewrite>, or create_file tool call."
+                    ),
+                    error_type="wrong_tool_for_edit",
+                    retryable=True,
+                    next_action="use_edit_broker_not_shell",
+                    metadata={"command": command, "reason": str(exc)},
+                )
+            raise
         self.ledger.commands_run.append(command)
         status = "done" if result.exit_code == 0 else "failed"
         events.append(AgentEvent("shell", "Shell", f"{command} (exit {result.exit_code}, {result.duration_seconds:.1f}s)", status))
@@ -711,3 +731,74 @@ def _classify_edit_error(exc: Exception) -> tuple[str, str]:
     if "outside" in text or "not under project root" in text:
         return "outside_project", "stop_and_report_outside_project"
     return "edit_failed", "inspect_tool_error"
+
+
+def _is_recoverable_edit_deletion_attempt(command: str, ledger: SessionLedger, reason: str) -> bool:
+    if ledger.mode != "execute":
+        return False
+    if not _looks_like_shell_file_deletion(command):
+        return False
+    if "file deletion" not in reason.lower() and "delete" not in reason.lower():
+        return False
+    objective_text = " ".join(
+        item
+        for item in [
+            ledger.objective or "",
+            ledger.pending_next_step or "",
+        ]
+        if item
+    ).lower()
+    if not _looks_like_edit_objective(objective_text):
+        return False
+    if _explicitly_requested_file_deletion(objective_text):
+        return False
+    return True
+
+
+def _looks_like_shell_file_deletion(command: str) -> bool:
+    lowered = command.lower()
+    tokens = set(re.findall(r"[a-z0-9_.:/\\-]+", lowered))
+    return bool(
+        {"remove-item", "rm", "del", "erase", "rmdir", "rd"} & tokens
+        or "remove-item" in lowered
+        or "deletefile" in lowered
+    )
+
+
+def _looks_like_edit_objective(text: str) -> bool:
+    markers = {
+        "add",
+        "change",
+        "code",
+        "comment",
+        "create",
+        "debug",
+        "docstring",
+        "document",
+        "documentation",
+        "edit",
+        "fix",
+        "format",
+        "implement",
+        "refactor",
+        "reformat",
+        "test",
+        "update",
+        "write",
+    }
+    tokens = set(re.findall(r"[a-z0-9_]+", text))
+    return bool(markers & tokens)
+
+
+def _explicitly_requested_file_deletion(text: str) -> bool:
+    deletion_phrases = (
+        "delete file",
+        "delete folder",
+        "delete directory",
+        "remove file",
+        "remove folder",
+        "remove directory",
+        "delete these files",
+        "remove these files",
+    )
+    return any(phrase in text for phrase in deletion_phrases)

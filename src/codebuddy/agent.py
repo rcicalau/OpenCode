@@ -54,7 +54,7 @@ from .objective_state import APPROVAL_WAIT, BLOCKED, COMPLETE, IDLE, PLANNING, W
 from .project_context import build_project_context
 from .researcher import Researcher
 from .search import Searcher
-from .session import PlanItem, SessionLedger
+from .session import PlanItem, SessionLedger, utc_now
 from .steering import SteeringInbox
 from .tool_calls import (
     MALFORMED_TOOL_CALL_NAME,
@@ -227,6 +227,7 @@ class CodeBuddyAgent:
         self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
         self.main_model_label = main_model_label or _model_label_from_client(self.llm, "main")
         self._current_changed_files: list[str] = []
+        self._recovery_events: list[dict[str, str]] = []
         self.tool_runtime = ToolRuntime(
             self.project_root,
             self.ledger,
@@ -284,10 +285,11 @@ class CodeBuddyAgent:
             model_context = self._context_with_research(prompt, mode, model_context, events)
             workplans = WorkPlanManager(self.project_root, self.ledger.session_id, self.edit_broker.policy)
             work_plan = workplans.active_or_new(prompt)
+            lifecycle_notice = self._record_workplan_lifecycle(workplans, events)
             if work_plan:
                 self.ledger.objective = work_plan.objective
                 events.append(AgentEvent("plan", "Plan", workplans.summary(work_plan)))
-                return self._handle_work_plan(workplans, work_plan, model_context, events)
+                return self._with_lifecycle_notice(self._handle_work_plan(workplans, work_plan, model_context, events), lifecycle_notice)
         elif mode == "scope":
             model_context = self._context_with_research(prompt, mode, model_context, events)
         validate_events_before = _validation_event_count(events)
@@ -299,7 +301,8 @@ class CodeBuddyAgent:
             message = (message.strip() + "\n\n" if message.strip() else "") + self._validation_failed_message()
         elif mode == "execute" and self.ledger.objective_state not in {APPROVAL_WAIT, BLOCKED}:
             self.ledger.objective_state = COMPLETE
-        return AgentResult(mode=mode, message=message, changed_files=list(self.ledger.files_edited), events=events)
+        result = AgentResult(mode=mode, message=message, changed_files=list(self.ledger.files_edited), events=events)
+        return self._with_lifecycle_notice(result, lifecycle_notice if mode == "execute" else "")
 
     def _run_model_loop(self, prompt: str, project_context: str, events: list[AgentEvent]) -> str:
         messages = [
@@ -360,6 +363,7 @@ class CodeBuddyAgent:
             changed_count_before = len(self._current_changed_files)
             self._emit_visible_thought(events, _tool_call_visible_thought(calls))
             tool_results = self._run_tool_calls(calls, events)
+            self._record_recovery_events(tool_results)
             self._emit_visible_observation(events, _tool_result_visible_observation(tool_results))
             changed_count_after = len(self._current_changed_files)
             if signature == repeated_signature and changed_count_after == changed_count_before:
@@ -501,8 +505,12 @@ class CodeBuddyAgent:
             events.append(AgentEvent("work", "Work", f"{item.label} attempt {item.attempts}/{self.max_item_attempts}"))
 
             changed_count_before = len(self._current_changed_files)
+            recovery_count_before = len(self._recovery_events)
             prompt = self._with_active_steering(manager.item_prompt(plan, item))
             last_message = self._run_model_loop(prompt, project_context, events)
+            new_recoveries = self._recovery_events[recovery_count_before:]
+            if new_recoveries:
+                item.recovery_history.extend(new_recoveries)
             if self.ledger.objective_state == APPROVAL_WAIT:
                 manager.save(plan)
                 return last_message, False
@@ -678,6 +686,19 @@ class CodeBuddyAgent:
     def _current_changed_files_snapshot(self) -> list[str]:
         return list(self._current_changed_files)
 
+    def _record_recovery_events(self, results: list[ToolResult]) -> None:
+        for result in results:
+            if result.ok or not result.retryable:
+                continue
+            self._recovery_events.append(
+                {
+                    "at": utc_now(),
+                    "tool": result.tool,
+                    "error_type": result.error_type or "error",
+                    "next_action": result.next_action or "inspect_tool_error",
+                }
+            )
+
     def _validation_failed_message(self) -> str:
         failures = self.ledger.validation_state.get("failures") if isinstance(self.ledger.validation_state, dict) else None
         failure_code = self.ledger.validation_state.get("failure_code") if isinstance(self.ledger.validation_state, dict) else None
@@ -704,6 +725,45 @@ class CodeBuddyAgent:
                     events.append(AgentEvent("git", "Git", "pushed checkpoint to origin"))
         except Exception as exc:
             events.append(AgentEvent("git", "Git", f"checkpoint skipped: {exc}", "failed"))
+
+    def _record_workplan_lifecycle(self, manager: WorkPlanManager, events: list[AgentEvent]) -> str:
+        notices: list[str] = []
+        if manager.last_shelved:
+            record = dict(manager.last_shelved)
+            if not any(item.get("id") == record.get("id") for item in self.ledger.shelved_objectives):
+                self.ledger.shelved_objectives.append(record)
+            self._clear_stale_active_objective_state()
+            objective = str(record.get("objective", "previous objective"))
+            replacement = str(record.get("replacement_objective", "the new objective"))
+            events.append(AgentEvent("plan", "Shelve", f"{objective} -> {replacement}"))
+            notices.append(
+                f"Shelved previous objective `{objective}` in favor of this new request. "
+                "After this objective finishes, type `resume shelved` to rebuild that work from the current project state."
+            )
+        if manager.last_resumed_shelved:
+            record = dict(manager.last_resumed_shelved)
+            for item in self.ledger.shelved_objectives:
+                if item.get("id") == record.get("id"):
+                    item.update(record)
+                    break
+            objective = str(record.get("objective", "previous objective"))
+            events.append(AgentEvent("plan", "Resume", f"resumed shelved objective {objective}"))
+            notices.append(f"Resumed shelved objective `{objective}` and rebuilt its plan from the current project state.")
+        return "\n\n".join(notices)
+
+    def _clear_stale_active_objective_state(self) -> None:
+        self.ledger.pending_next_step = None
+        self.ledger.blockers = []
+        self.ledger.validation_state = {}
+        self.ledger.approvals.pop("pending_command", None)
+        self.ledger.approvals.pop("pending_command_cwd", None)
+
+    @staticmethod
+    def _with_lifecycle_notice(result: AgentResult, notice: str) -> AgentResult:
+        if not notice:
+            return result
+        message = (notice + "\n\n" + result.message).strip()
+        return AgentResult(result.mode, message, result.changed_files, result.events)
 
     def _sync_ledger_plan(self, plan: WorkPlan) -> None:
         self.ledger.plan = [

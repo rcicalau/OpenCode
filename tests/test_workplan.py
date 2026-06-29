@@ -94,6 +94,53 @@ class WorkPlanTests(unittest.TestCase):
         self.assertEqual(retried.items[0].status, "pending")
         self.assertIsNone(retried.items[0].last_error)
 
+    def test_unrelated_new_objective_shelves_unfinished_workplan(self) -> None:
+        plan = self.manager.active_or_new("Document each file in the codebase")
+        self.assertIsNotNone(plan)
+        plan.items[0].status = "blocked"
+        plan.items[0].last_error = "wrong edit strategy"
+        self.manager.save(plan)
+
+        new_plan = self.manager.active_or_new("Add google style documentation to b.py")
+
+        self.assertIsNotNone(new_plan)
+        self.assertEqual(new_plan.objective, "Add google style documentation to b.py")
+        self.assertEqual(new_plan.items[0].target_path, "b.py")
+        self.assertIsNotNone(self.manager.last_shelved)
+        self.assertEqual(self.manager.last_shelved["objective"], "Document each file in the codebase")
+        index = json.loads((self.root / ".buddy" / "workplans" / "shelved.json").read_text(encoding="utf-8"))
+        self.assertEqual(index[0]["objective"], "Document each file in the codebase")
+        saved = json.loads((self.root / ".buddy" / "workplans" / "current.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["objective"], "Add google style documentation to b.py")
+
+    def test_resume_shelved_rebuilds_plan_from_current_project_state(self) -> None:
+        plan = self.manager.active_or_new("Document each file in the codebase")
+        self.assertIsNotNone(plan)
+        plan.items[0].status = "blocked"
+        plan.items[0].last_error = "old failure"
+        self.manager.save(plan)
+        self.assertIsNotNone(self.manager.active_or_new("Add google style documentation to b.py"))
+        (self.root / "c.py").write_text("def c():\n    return 3\n", encoding="utf-8")
+
+        resumed = self.manager.active_or_new("resume shelved")
+
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.objective, "Document each file in the codebase")
+        self.assertEqual([item.target_path for item in resumed.items], ["a.py", "b.py", "c.py"])
+        self.assertTrue(all(item.status == "pending" for item in resumed.items))
+        self.assertIsNotNone(self.manager.last_resumed_shelved)
+        self.assertEqual(self.manager.last_resumed_shelved["status"], "resumed")
+
+    def test_resume_shelved_without_shelved_work_keeps_current_plan(self) -> None:
+        plan = self.manager.active_or_new("Document each file in the codebase")
+        self.assertIsNotNone(plan)
+
+        resumed = self.manager.active_or_new("resume shelved")
+
+        self.assertIsNotNone(resumed)
+        self.assertEqual(resumed.objective, "Document each file in the codebase")
+        self.assertFalse((self.root / ".buddy" / "workplans" / "shelved.json").exists())
+
     def test_repo_gitignore_excludes_workplan_state(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")

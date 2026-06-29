@@ -328,6 +328,44 @@ def handle():
         self.assertEqual(self.ledger.pending_next_step, "approve command before execution")
         self.assertEqual(self.ledger.objective_state, APPROVAL_WAIT)
 
+    def test_document_workplan_recovers_from_shell_deletion_as_wrong_tool(self) -> None:
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                LLMResponse("", tool_calls=[ParsedToolCall("run_command", {"command": "Remove-Item a.py"})]),
+                (
+                    '<codebuddy_replace path="a.py">\n'
+                    "<old>\n"
+                    "def a():\n"
+                    "    return 1\n"
+                    "</old>\n"
+                    "<new>\n"
+                    '"""Small sample module used by tests."""\n'
+                    "\n"
+                    "def a():\n"
+                    '    """Return the integer one."""\n'
+                    "    return 1\n"
+                    "</new>\n"
+                    "</codebuddy_replace>"
+                ),
+                "Documented a.py.",
+            ]
+        )
+
+        result = agent.handle("Add google style documentation to a.py")
+
+        self.assertIn("Work plan complete", result.message)
+        self.assertEqual(self.ledger.objective_state, COMPLETE)
+        self.assertIsNone(self.ledger.pending_next_step)
+        self.assertNotIn("pending_command", self.ledger.approvals)
+        self.assertIn('"""Return the integer one."""', (self.root / "a.py").read_text(encoding="utf-8"))
+        replayed_prompt = "\n".join(message.content for message in agent.llm.calls[1])
+        self.assertIn("wrong_tool_for_edit", replayed_prompt)
+        self.assertIn("use_edit_broker_not_shell", replayed_prompt)
+        saved = json.loads((self.root / ".buddy" / "workplans" / "current.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["items"][0]["recovery_history"][0]["error_type"], "wrong_tool_for_edit")
+        self.assertEqual(saved["items"][0]["recovery_history"][0]["next_action"], "use_edit_broker_not_shell")
+
     def test_agent_loops_over_multiple_tool_rounds_before_answering(self) -> None:
         (self.root / "README.md").write_text("needle lives here\n", encoding="utf-8")
         agent = self.make_agent(

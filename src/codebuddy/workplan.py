@@ -27,6 +27,7 @@ class WorkItem:
     summary: str = ""
     last_error: str | None = None
     validation_passed: bool | None = None
+    recovery_history: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -75,7 +76,11 @@ class WorkPlanManager:
         self.policy = policy
         self.base_dir = self.project_root / ".buddy" / "workplans"
         self.current_path = self.base_dir / "current.json"
+        self.shelved_dir = self.base_dir / "shelved"
+        self.shelved_index_path = self.base_dir / "shelved.json"
         self.active_plan_path = self.project_root / ".buddy" / "plans" / "active.json"
+        self.last_shelved: dict | None = None
+        self.last_resumed_shelved: dict | None = None
 
     def load_current(self) -> WorkPlan | None:
         if not self.current_path.exists():
@@ -107,7 +112,21 @@ class WorkPlanManager:
                 pass
 
     def active_or_new(self, objective: str) -> WorkPlan | None:
+        self.last_shelved = None
+        self.last_resumed_shelved = None
         existing = self.load_current()
+        if _is_resume_shelved_prompt(objective):
+            if not self._has_shelved_objective():
+                return existing if existing and _has_unfinished_items(existing) else None
+            excluded_shelved_ids: set[str] = set()
+            if existing and _has_unfinished_items(existing):
+                self._shelve_current(existing, "shelved before resuming another objective", objective)
+                if self.last_shelved and self.last_shelved.get("id"):
+                    excluded_shelved_ids.add(str(self.last_shelved["id"]))
+            resumed = self._resume_latest_shelved(excluded_shelved_ids)
+            if resumed:
+                self.save(resumed)
+            return resumed
         if existing and existing.blocked_items() and _is_retry_prompt(objective):
             _reset_blocked_items(existing)
             self.save(existing)
@@ -120,10 +139,105 @@ class WorkPlanManager:
             return existing
         if existing and (existing.pending_items() or existing.blocked_items()) and _same_objective(existing.objective, objective):
             return existing
+        if existing and _has_unfinished_items(existing):
+            self._shelve_current(existing, "replaced by a new objective", objective)
         plan = self.plan_for_objective(objective)
         if plan:
             self.save(plan)
         return plan
+
+    def _shelve_current(self, plan: WorkPlan, reason: str, replacement_objective: str) -> None:
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.shelved_dir.mkdir(parents=True, exist_ok=True)
+        shelved_id = uuid.uuid4().hex[:12]
+        snapshot = asdict(plan)
+        snapshot_path = self.shelved_dir / f"{shelved_id}.json"
+        snapshot_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        record = {
+            "id": shelved_id,
+            "status": "shelved",
+            "shelved_at": utc_now(),
+            "session_id": self.session_id,
+            "plan_id": plan.id,
+            "objective": plan.objective,
+            "kind": plan.kind,
+            "reason": reason,
+            "replacement_objective": replacement_objective,
+            "summary": self.summary(plan),
+            "progress": self.progress(plan),
+            "snapshot": f"shelved/{shelved_id}.json",
+            "completed_items": [item.label for item in plan.items if item.status == "completed"],
+            "pending_items": [item.label for item in plan.pending_items()],
+            "blocked_items": [f"{item.label}: {item.last_error or 'blocked'}" for item in plan.blocked_items()],
+        }
+        records = self._load_shelved_index()
+        records.append(record)
+        self._write_shelved_index(records)
+        self.last_shelved = record
+        self.clear_current()
+
+    def _resume_latest_shelved(self, excluded_ids: set[str] | None = None) -> WorkPlan | None:
+        excluded_ids = excluded_ids or set()
+        records = self._load_shelved_index()
+        for index in range(len(records) - 1, -1, -1):
+            record = records[index]
+            if record.get("status") != "shelved":
+                continue
+            if str(record.get("id", "")) in excluded_ids:
+                continue
+            objective = str(record.get("objective") or "").strip()
+            plan = self.plan_for_objective(objective) or self._plan_from_shelved_snapshot(record)
+            if not plan:
+                continue
+            record = dict(record)
+            record["status"] = "resumed"
+            record["resumed_at"] = utc_now()
+            record["resumed_session_id"] = self.session_id
+            records[index] = record
+            self._write_shelved_index(records)
+            self.last_resumed_shelved = record
+            plan.assumptions.append(f"Resumed shelved objective from {record.get('shelved_at', 'unknown time')}: {record.get('summary', '')}")
+            return plan
+        return None
+
+    def _plan_from_shelved_snapshot(self, record: dict) -> WorkPlan | None:
+        snapshot = record.get("snapshot")
+        if not isinstance(snapshot, str):
+            return None
+        path = self.base_dir / snapshot
+        try:
+            plan = self._decode(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError, TypeError, KeyError):
+            return None
+        plan.id = uuid.uuid4().hex[:12]
+        plan.session_id = self.session_id
+        plan.created_at = utc_now()
+        plan.updated_at = utc_now()
+        for item in plan.items:
+            if item.status != "completed":
+                item.status = "pending"
+            item.attempts = 0
+            item.last_error = None
+            item.validation_passed = None
+        return plan
+
+    def _load_shelved_index(self) -> list[dict]:
+        if not self.shelved_index_path.exists():
+            return []
+        try:
+            data = json.loads(self.shelved_index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    def _write_shelved_index(self, records: list[dict]) -> None:
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.shelved_index_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+
+    def _has_shelved_objective(self) -> bool:
+        return any(record.get("status") == "shelved" for record in self._load_shelved_index())
 
     def plan_for_objective(self, objective: str) -> WorkPlan | None:
         lowered = objective.lower()
@@ -387,12 +501,20 @@ def _is_resume_prompt(objective: str) -> bool:
     return objective.strip().lower() in {"continue", "resume", "keep going", "next", "continue work"}
 
 
+def _is_resume_shelved_prompt(objective: str) -> bool:
+    return objective.strip().lower() in {"resume shelved", "continue shelved", "resume previous", "continue previous objective"}
+
+
 def _is_retry_prompt(objective: str) -> bool:
     return objective.strip().lower() in {"retry", "retry blocked", "try again", "retry failed", "resume blocked"}
 
 
 def _same_objective(a: str, b: str) -> bool:
     return a.strip().lower() == b.strip().lower()
+
+
+def _has_unfinished_items(plan: WorkPlan) -> bool:
+    return bool(plan.pending_items() or plan.blocked_items())
 
 
 def _reset_blocked_items(plan: WorkPlan) -> None:
