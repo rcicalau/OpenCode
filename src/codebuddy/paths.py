@@ -49,25 +49,6 @@ def is_project_marker(path: Path) -> bool:
     )
 
 
-def find_buddy_project_root(start: Path | None = None) -> Path | None:
-    current = (start or Path.cwd()).resolve()
-    boundaries = _home_boundaries()
-    for path in [current, *current.parents]:
-        if path in boundaries and current != path:
-            break
-        if is_buddy_project_marker(path):
-            return path
-    return None
-
-
-def is_buddy_project_marker(path: Path) -> bool:
-    return (
-        (path / ".buddy" / "config.toml").exists()
-        or (path / ".buddy" / "sessions" / "current.json").exists()
-        or (path / "BUDDY.md").exists()
-    )
-
-
 def resolve_launch_start_dir(start: str | Path | None = None) -> Path:
     if start:
         return Path(start).expanduser().resolve()
@@ -85,8 +66,7 @@ def resolve_launch_start_dir(start: str | Path | None = None) -> Path:
 def resolve_project_root(explicit_root: str | Path | None = None, start: Path | None = None) -> Path:
     if explicit_root:
         return Path(explicit_root).expanduser().resolve()
-    start_root = resolve_launch_start_dir(start)
-    return find_buddy_project_root(start_root) or start_root
+    return resolve_launch_start_dir(start)
 
 
 def _home_boundaries() -> set[Path]:

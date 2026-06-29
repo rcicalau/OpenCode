@@ -274,17 +274,19 @@ class CliLlmAgentGitTests(unittest.TestCase):
         self.assertTrue((caller_project / ".buddy" / "sessions" / "current.json").exists())
         self.assertFalse((parent / ".buddy").exists())
 
-    def test_start_dir_inside_configured_buddy_project_reuses_project_root(self) -> None:
-        target = Path(self.tmp.name) / "configured-target"
-        nested = target / "tools" / "scripts"
-        nested.mkdir(parents=True)
-        (target / "BUDDY.md").write_text("# Configured Target\n", encoding="utf-8")
+    def test_start_dir_does_not_capture_parent_buddy_project(self) -> None:
+        parent = Path(self.tmp.name) / "code"
+        caller_project = parent / "project-x"
+        caller_project.mkdir(parents=True)
+        (parent / "BUDDY.md").write_text("# Parent Buddy Project\n", encoding="utf-8")
+        (parent / ".buddy").mkdir()
+        (parent / ".buddy" / "config.toml").write_text("# parent config\n", encoding="utf-8")
         old = os.environ.get("CODEBUDDY_START_DIR")
-        os.environ["CODEBUDDY_START_DIR"] = str(nested)
+        os.environ["CODEBUDDY_START_DIR"] = str(caller_project)
         stdout = StringIO()
 
         try:
-            os.chdir(nested)
+            os.chdir(caller_project)
             with redirect_stdout(stdout):
                 self.assertEqual(main(["status"]), 0)
         finally:
@@ -294,9 +296,9 @@ class CliLlmAgentGitTests(unittest.TestCase):
                 os.environ["CODEBUDDY_START_DIR"] = old
 
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(Path(payload["project_root"]), target.resolve())
-        self.assertTrue((target / ".buddy" / "sessions" / "current.json").exists())
-        self.assertFalse((nested / ".buddy").exists())
+        self.assertEqual(Path(payload["project_root"]), caller_project.resolve())
+        self.assertTrue((caller_project / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((parent / ".buddy" / "sessions" / "current.json").exists())
 
     def test_prompt_project_root_uses_native_picker_selection(self) -> None:
         selected = Path(self.tmp.name) / "picked-project"
@@ -574,18 +576,20 @@ model = "sonar-pro"
         self.assertEqual(payload["base_url"], "set")
         self.assertNotIn("auth_error", payload)
 
-    def test_doctor_from_subfolder_uses_buddy_configured_project_root_for_ai_mart(self) -> None:
-        target = Path(self.tmp.name) / "configured-project"
-        nested = target / "tools" / "scripts"
+    def test_doctor_does_not_capture_parent_buddy_project_for_ai_mart(self) -> None:
+        parent = Path(self.tmp.name) / "configured-parent"
+        target = parent / "child-project"
         target_src = target / "src"
-        nested.mkdir(parents=True)
+        parent.mkdir()
         target_src.mkdir(parents=True)
-        (target / "BUDDY.md").write_text("# Configured Project\n", encoding="utf-8")
+        (parent / "BUDDY.md").write_text("# Configured Parent\n", encoding="utf-8")
+        (parent / ".buddy").mkdir()
+        (parent / ".buddy" / "config.toml").write_text("# parent config\n", encoding="utf-8")
         (target_src / "ai_mart.py").write_text(
-            'base_url = "https://configured-project.example/openai/v1"\n'
+            'base_url = "https://child-project.example/openai/v1"\n'
             "class AuthClient:\n"
             "    def authenticate_broker(self):\n"
-            "        return type('Token', (), {'access_token': 'configured-token'})()\n"
+            "        return type('Token', (), {'access_token': 'child-token'})()\n"
             "auth_client = AuthClient()\n",
             encoding="utf-8",
         )
@@ -597,11 +601,11 @@ model = "sonar-pro"
             encoding="utf-8",
         )
         old_start = os.environ.get("CODEBUDDY_START_DIR")
-        os.environ["CODEBUDDY_START_DIR"] = str(nested)
+        os.environ["CODEBUDDY_START_DIR"] = str(target)
         stdout = StringIO()
 
         try:
-            os.chdir(nested)
+            os.chdir(target)
             with redirect_stdout(stdout):
                 code = main(["doctor"])
         finally:
@@ -615,6 +619,7 @@ model = "sonar-pro"
         self.assertEqual(Path(payload["project_root"]), target.resolve())
         self.assertEqual(payload["base_url"], "set")
         self.assertNotIn("auth_error", payload)
+        self.assertFalse((parent / ".buddy" / "sessions" / "current.json").exists())
 
     def test_auth_set_persists_provider_key_via_writer_without_project_config_secret(self) -> None:
         written: dict[str, str] = {}
