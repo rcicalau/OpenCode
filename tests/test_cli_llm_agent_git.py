@@ -1097,6 +1097,41 @@ api_key_env = "CODEBUDDY_MISSING_TEST_KEY"
         self.assertTrue(any(command.startswith("git add") for command in commands))
         self.assertTrue(any(command.startswith("git commit") for command in commands))
 
+    def test_checkpoint_commit_blocks_preexisting_staged_changes(self) -> None:
+        init_repo_with_commit(self.root, {"agent.txt": "base\n", "user.txt": "base\n"})
+        git = GitManager(self.root)
+        git.ensure_agent_branch("work")
+        (self.root / "user.txt").write_text("user staged change\n", encoding="utf-8")
+        subprocess.run(["git", "add", "user.txt"], cwd=self.root, check=True)
+        (self.root / "agent.txt").write_text("agent change\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(RuntimeError, "pre-existing staged changes"):
+            git.checkpoint_commit("checkpoint", ["agent.txt"])
+
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.root, check=True, text=True, stdout=subprocess.PIPE).stdout
+        self.assertIn("M  user.txt", status)
+        self.assertIn(" M agent.txt", status)
+
+    def test_git_manager_records_branch_commit_and_push_state(self) -> None:
+        init_repo_with_commit(self.root, {"agent.txt": "base\n"})
+        remote = Path(self.tmp.name) / "origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=self.root, check=True)
+        git = GitManager(self.root)
+
+        branch = git.ensure_agent_branch("stateful work")
+        (self.root / "agent.txt").write_text("agent change\n", encoding="utf-8")
+        self.assertTrue(git.checkpoint_commit("checkpoint", ["agent.txt"]))
+        self.assertTrue(git.push_current_branch("origin"))
+
+        state = git.session_state()
+        self.assertEqual(state["agent_branch"], branch)
+        self.assertEqual(state["starting_branch"], "main")
+        self.assertEqual(state["checkpoints"][0]["message"], "checkpoint")
+        self.assertEqual(state["checkpoints"][0]["files"], ["agent.txt"])
+        self.assertEqual(state["pushes"][0]["remote"], "origin")
+        self.assertEqual(state["pushes"][0]["branch"], branch)
+
     def test_agent_branch_checkpoint_can_push_to_origin(self) -> None:
         init_repo_with_commit(self.root, {"agent.txt": "base\n"})
         remote = Path(self.tmp.name) / "origin.git"

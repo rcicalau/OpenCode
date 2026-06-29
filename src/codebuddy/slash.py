@@ -123,24 +123,27 @@ class SlashCommandHandler:
             status = self.git_manager.status()
             if not status.is_repo:
                 return SlashResult(True, False, "not a git repository")
-            return SlashResult(True, False, self.git_manager.diff() or "no diff")
+            return SlashResult(True, False, self.git_manager.diff_review() or "no diff")
         if command == "/branch":
             status = self.git_manager.status()
             if not status.is_repo:
                 return SlashResult(True, False, "not a git repository")
             return SlashResult(True, False, status.branch or "detached HEAD")
         if command == "/review":
-            return SlashResult(True, False, self.git_manager.diff() or "no diff to review")
+            return SlashResult(True, False, self.git_manager.diff_review() or "no diff to review")
         if command == "/merge-ready":
-            status = self.git_manager.status()
-            dirty = bool(status.porcelain.strip()) if status.is_repo else False
             validation = self.ledger.validation_state
-            return SlashResult(True, False, f"merge_ready={status.is_repo and not dirty and bool(validation.get('passed', False))}")
+            validation_passed = validation.get("passed") if isinstance(validation, dict) else None
+            report = self.git_manager.merge_ready(validation_passed if isinstance(validation_passed, bool) else None)
+            return SlashResult(True, False, json.dumps(report, indent=2))
         if command == "/commit":
             if not self.ledger.files_edited:
                 return SlashResult(True, False, "no agent-edited files to commit")
             message = arg or "Code Buddy checkpoint"
-            committed = self.git_manager.checkpoint_commit(message, self.ledger.files_edited)
+            try:
+                committed = self.git_manager.checkpoint_commit(message, self.ledger.files_edited)
+            except Exception as exc:
+                return SlashResult(True, False, f"commit blocked: {exc}\nRun /diff to inspect staged, unstaged, and untracked files.")
             return SlashResult(True, False, "committed" if committed else "nothing to commit")
         if command == "/editor":
             return SlashResult(True, False, "/editor is available inside interactive chat")

@@ -336,6 +336,47 @@ def handle():
         self.assertTrue(any(event.title == "Explore" for event in result.events))
         self.assertIn("Project exploration", "\n".join(message.content for message in agent.llm.calls[1]))
 
+    def test_agent_exposes_safe_git_tools_and_reports_status(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (self.root / "README.md").write_text("git status context\n", encoding="utf-8")
+        agent = self.make_agent(
+            [
+                LLMResponse("", tool_calls=[ParsedToolCall("git_status", {})]),
+                "Git status inspected.",
+            ]
+        )
+
+        result = agent.handle("/scope inspect git state")
+
+        tool_names = [tool["function"]["name"] for tool in agent.llm.tool_requests[0]]
+        self.assertIn("git_status", tool_names)
+        self.assertIn("Git status inspected.", result.message)
+        replayed_prompt = "\n".join(message.content for message in agent.llm.calls[1])
+        self.assertIn("git_status", replayed_prompt)
+        self.assertIn("README.md", replayed_prompt)
+
+    def test_agent_git_commit_tool_commits_only_agent_changed_files(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        (self.root / "agent.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "agent.txt"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.ledger.approvals["dirty_branch"] = True
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"agent.txt","old":"base","new":"agent change"}}</tool_call>',
+                LLMResponse("", tool_calls=[ParsedToolCall("git_commit", {"message": "agent checkpoint"})]),
+                "Committed agent changes.",
+            ]
+        )
+
+        result = agent.handle("Update agent.txt and commit it")
+
+        self.assertIn("Committed agent changes.", result.message)
+        last_message = subprocess.run(["git", "log", "-1", "--format=%s"], cwd=self.root, check=True, text=True, stdout=subprocess.PIPE).stdout.strip()
+        self.assertEqual(last_message, "agent checkpoint")
+
     def test_scope_mode_blocks_mutating_tool_calls_even_if_model_emits_them(self) -> None:
         agent = self.make_agent(
             [

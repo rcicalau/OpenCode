@@ -160,8 +160,25 @@ class SlashCommandTests(unittest.TestCase):
         self.ledger.files_edited = ["agent.txt"]
 
         self.assertIn("codebuddy/", self.handler.handle("/branch").message)
-        self.assertIn("changed", self.handler.handle("/diff").message)
+        diff_message = self.handler.handle("/diff").message
+        self.assertIn("Git review", diff_message)
+        self.assertIn("Unstaged files", diff_message)
+        self.assertIn("agent.txt", diff_message)
+        self.assertIn("changed", diff_message)
         self.assertIn("committed", self.handler.handle("/commit test commit").message)
+
+    def test_commit_slash_reports_preexisting_staged_changes(self) -> None:
+        init_repo_with_commit(self.root, {"agent.txt": "base\n", "user.txt": "base\n"})
+        self.git.ensure_agent_branch("work")
+        (self.root / "user.txt").write_text("user staged\n", encoding="utf-8")
+        subprocess.run(["git", "add", "user.txt"], cwd=self.root, check=True)
+        (self.root / "agent.txt").write_text("agent change\n", encoding="utf-8")
+        self.ledger.files_edited = ["agent.txt"]
+
+        message = self.handler.handle("/commit blocked commit").message
+
+        self.assertIn("commit blocked", message)
+        self.assertIn("pre-existing staged changes", message)
 
 
 if __name__ == "__main__":

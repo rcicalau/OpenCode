@@ -15,8 +15,11 @@ class ValidationResult:
     command_results: list[CommandResult] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
+    failure_code: str | None = None
+    recovery_actions: list[str] = field(default_factory=list)
     touched_files: list[str] = field(default_factory=list)
     unexpected_files: list[str] = field(default_factory=list)
+    worktree_report: str = ""
     tiers: list[str] = field(default_factory=list)
 
 
@@ -43,8 +46,20 @@ class ValidationHarness:
             unexpected = self._unexpected_changed_files(expected_files)
             if unexpected:
                 result.passed = False
+                result.failure_code = "unexpected_worktree_changes"
                 result.unexpected_files = unexpected
-                result.failures.append(f"unexpected files changed: {', '.join(unexpected)}")
+                result.worktree_report = self._git_status_report()
+                result.recovery_actions = [
+                    "git_status",
+                    "inspect_unexpected_files",
+                    "commit_only_expected_files",
+                    "ask_user_before_touching_unexpected_files",
+                ]
+                result.failures.append(
+                    "unexpected files changed: "
+                    + ", ".join(unexpected)
+                    + ". Recovery: inspect git status, preserve user changes, and commit only expected files."
+                )
         if self.commands:
             result.tiers.append("commands")
         for command in self.commands:
@@ -57,6 +72,7 @@ class ValidationHarness:
             result.command_results.append(command_result)
             if command_result.exit_code != 0:
                 result.passed = False
+                result.failure_code = result.failure_code or "validation_command_failed"
                 result.failures.append(f"command failed ({command_result.exit_code}): {command}")
         return result
 
@@ -91,6 +107,26 @@ class ValidationHarness:
                 continue
             changed.add(rel)
         return sorted(path for path in changed if path not in expected)
+
+    def _git_status_report(self) -> str:
+        if not (self.project_root / ".git").exists():
+            return ""
+        try:
+            completed = subprocess.run(
+                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+                cwd=self.project_root,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if completed.returncode != 0:
+            return completed.stderr.strip()
+        return completed.stdout.strip()
 
     def _relative(self, path: Path) -> str:
         resolved = path.resolve()

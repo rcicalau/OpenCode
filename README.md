@@ -214,4 +214,6 @@ Streaming transport support is implemented for OpenAI-compatible server-sent-eve
 
 After file edits, Code Buddy runs validation even if the model forgets to request it. Python file edits are syntax-checked before write, so invalid Python is rejected without touching the file. Shell commands stay inside the selected project root, hard-deny commands cannot be bypassed by ordinary tool approval, and Git branch creation refuses dirty user work unless explicitly approved.
 
+Git is exposed to the agent through explicit safe tools for status, diff review, recent log, remote info, merge readiness, commit, and push. Checkpoint commits fail closed when unrelated staged files already exist, record branch/checkpoint/push state under `.buddy\git\state.json`, and commit only agent-owned paths. `/diff` shows a review report with staged, unstaged, and untracked sections instead of raw diff only.
+
 If Git branch creation or a shell command stops for approval, type `y`, `/a`, `/approve`, or `/approve-branch` to approve once and continue the saved objective. `/yolo` turns YOLO mode on and also approves any currently pending request once. Git remote detection reads the current project's `.git` remote config and recognizes both GitHub and GitLab-style origins, including self-hosted GitLab hosts.

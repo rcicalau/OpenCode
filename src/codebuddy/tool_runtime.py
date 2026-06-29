@@ -9,6 +9,7 @@ from .edit_broker import EditBroker
 from .errors import ConfirmationRequired, DeniedByPolicy
 from .events import AgentEvent
 from .explorer import explore_project
+from .git_manager import GitManager
 from .hashutil import sha256_bytes
 from .search import Searcher
 from .session import SessionLedger
@@ -31,6 +32,7 @@ class ToolRuntime:
         mark_plan=None,
         record_changed_file: Callable[[str], None] | None = None,
         current_changed_files: Callable[[], list[str]] | None = None,
+        git_manager: GitManager | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.ledger = ledger
@@ -38,6 +40,7 @@ class ToolRuntime:
         self.command_broker = command_broker
         self.searcher = searcher
         self.validation = validation
+        self.git_manager = git_manager
         self.enabled_tools = enabled_tools or {}
         self.mark_plan = mark_plan or (lambda _step, _status: None)
         self.record_changed_file = record_changed_file or (lambda _path: None)
@@ -82,6 +85,20 @@ class ToolRuntime:
                 results.append(self._run_command(call, events))
             elif call.name == "validate":
                 results.append(self._validate(events))
+            elif call.name == "git_status":
+                results.append(self._git_status(events))
+            elif call.name == "git_diff":
+                results.append(self._git_diff(events))
+            elif call.name == "git_log":
+                results.append(self._git_log(call, events))
+            elif call.name == "git_remote_info":
+                results.append(self._git_remote_info(events))
+            elif call.name == "git_merge_ready":
+                results.append(self._git_merge_ready(events))
+            elif call.name == "git_commit":
+                results.append(self._git_commit(call, events))
+            elif call.name == "git_push":
+                results.append(self._git_push(call, events))
             elif call.name == MALFORMED_TOOL_CALL_NAME:
                 results.append(self._malformed_tool_call(call, events))
             else:
@@ -364,17 +381,125 @@ class ToolRuntime:
         return ToolResult(
             "validate",
             validation.passed,
-            f"validation passed={validation.passed} failures={validation.failures}",
-            error_type=None if validation.passed else "validation_failed",
+            f"validation passed={validation.passed} failures={validation.failures}"
+            + (f"\nrecovery_actions={validation.recovery_actions}" if validation.recovery_actions else "")
+            + (f"\nworktree_report:\n{validation.worktree_report}" if validation.worktree_report else ""),
+            error_type=None if validation.passed else validation.failure_code or "validation_failed",
             retryable=not validation.passed,
-            next_action="fix_validation_failures" if not validation.passed else None,
+            next_action=_validation_next_action(validation) if not validation.passed else None,
             metadata={
                 "failures": validation.failures,
+                "failure_code": validation.failure_code,
+                "recovery_actions": validation.recovery_actions,
                 "checks": validation.checks,
                 "tiers": validation.tiers,
                 "unexpected_files": validation.unexpected_files,
+                "worktree_report": validation.worktree_report,
             },
         )
+
+    def _git_status(self, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_status", False, "git_status failed: git manager unavailable", error_type="tool_unavailable")
+        status = self.git_manager.status()
+        content = (
+            f"git_status is_repo={status.is_repo} branch={status.branch}\n"
+            f"porcelain:\n{status.porcelain or '<clean>'}"
+        )
+        events.append(AgentEvent("git", "Git", "status"))
+        return ToolResult(
+            "git_status",
+            True,
+            content,
+            metadata={"is_repo": status.is_repo, "branch": status.branch, "porcelain": status.porcelain},
+        )
+
+    def _git_diff(self, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_diff", False, "git_diff failed: git manager unavailable", error_type="tool_unavailable")
+        review = self.git_manager.diff_review()
+        events.append(AgentEvent("git", "Git", "diff review"))
+        return ToolResult("git_diff", True, review, metadata={"review": True})
+
+    def _git_log(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_log", False, "git_log failed: git manager unavailable", error_type="tool_unavailable")
+        max_count = int(call.arguments.get("max_count", 5))
+        content = self.git_manager.log(max_count) or "no git log available"
+        events.append(AgentEvent("git", "Git", f"log {max_count}"))
+        return ToolResult("git_log", True, content, metadata={"max_count": max_count})
+
+    def _git_remote_info(self, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_remote_info", False, "git_remote_info failed: git manager unavailable", error_type="tool_unavailable")
+        info = self.git_manager.remote_info()
+        events.append(AgentEvent("git", "Git", "remote"))
+        if not info:
+            return ToolResult("git_remote_info", True, "no origin remote configured", metadata={"remote": None})
+        return ToolResult(
+            "git_remote_info",
+            True,
+            f"remote {info.name}: {info.provider} {info.host}/{info.owner}/{info.repo}\nurl: {info.url}",
+            metadata={"name": info.name, "provider": info.provider, "host": info.host, "owner": info.owner, "repo": info.repo, "url": info.url},
+        )
+
+    def _git_merge_ready(self, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_merge_ready", False, "git_merge_ready failed: git manager unavailable", error_type="tool_unavailable")
+        validation_passed = self.ledger.validation_state.get("passed") if isinstance(self.ledger.validation_state, dict) else None
+        payload = self.git_manager.merge_ready(validation_passed if isinstance(validation_passed, bool) else None)
+        events.append(AgentEvent("git", "Git", "merge ready"))
+        return ToolResult(
+            "git_merge_ready",
+            True,
+            f"merge_ready={payload['ready']} reasons={payload['reasons']}",
+            metadata=payload,
+        )
+
+    def _git_commit(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_commit", False, "git_commit failed: git manager unavailable", error_type="tool_unavailable")
+        message = str(call.arguments["message"])
+        paths = call.arguments.get("paths")
+        if not paths:
+            paths = self.current_changed_files() if self.current_changed_files else list(self.ledger.files_edited)
+        if not isinstance(paths, list):
+            paths = list(self.ledger.files_edited)
+        try:
+            committed = self.git_manager.checkpoint_commit(message, [str(path) for path in paths])
+        except Exception as exc:
+            events.append(AgentEvent("git", "Git", f"commit failed: {exc}", "failed"))
+            return ToolResult(
+                "git_commit",
+                False,
+                f"git_commit failed: {exc}",
+                error_type="git_commit_failed",
+                retryable=True,
+                next_action="inspect_git_status_and_retry_commit_only_agent_paths",
+                metadata={"paths": paths},
+            )
+        events.append(AgentEvent("git", "Git", "committed" if committed else "nothing to commit"))
+        return ToolResult("git_commit", committed, "committed" if committed else "nothing to commit", metadata={"paths": paths})
+
+    def _git_push(self, call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
+        if not self.git_manager:
+            return ToolResult("git_push", False, "git_push failed: git manager unavailable", error_type="tool_unavailable")
+        remote = str(call.arguments.get("remote", "origin"))
+        try:
+            pushed = self.git_manager.push_current_branch(remote)
+        except Exception as exc:
+            events.append(AgentEvent("git", "Git", f"push failed: {exc}", "failed"))
+            return ToolResult(
+                "git_push",
+                False,
+                f"git_push failed: {exc}",
+                error_type="git_push_failed",
+                retryable=True,
+                next_action="inspect_remote_and_tracking_status",
+                metadata={"remote": remote},
+            )
+        events.append(AgentEvent("git", "Git", f"pushed {remote}" if pushed else "push skipped"))
+        return ToolResult("git_push", pushed, f"pushed={pushed} remote={remote}", metadata={"remote": remote})
 
     def _validation_targets(self) -> list[Path]:
         rel_paths = self.current_changed_files() if self.current_changed_files else list(self.ledger.files_edited)
@@ -413,6 +538,13 @@ class ToolRuntime:
             "apply_unified_diff": "edit",
             "run_command": "shell",
             "validate": "validate",
+            "git_status": "git",
+            "git_diff": "git",
+            "git_log": "git",
+            "git_remote_info": "git",
+            "git_merge_ready": "git",
+            "git_commit": "git",
+            "git_push": "git",
         }
         config_name = tool_map.get(name)
         if config_name and self.enabled_tools.get(config_name, True) is False:
@@ -432,6 +564,12 @@ def _diff_stat(diff: str) -> str:
     return f"+{added}/-{removed}"
 
 
+def _validation_next_action(validation) -> str:
+    if validation.failure_code == "unexpected_worktree_changes":
+        return "inspect_git_status_preserve_user_changes_then_retry_expected_files"
+    return "fix_validation_failures"
+
+
 TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "read_text": {"path": str},
     "search": {"pattern": str},
@@ -442,6 +580,13 @@ TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "apply_unified_diff": {"path": str, "patch": str},
     "run_command": {"command": str},
     "validate": {},
+    "git_status": {},
+    "git_diff": {},
+    "git_log": {},
+    "git_remote_info": {},
+    "git_merge_ready": {},
+    "git_commit": {"message": str},
+    "git_push": {},
     MALFORMED_TOOL_CALL_NAME: {},
 }
 
@@ -452,6 +597,9 @@ OPTIONAL_TOOL_ARGUMENTS: dict[str, dict[str, type | tuple[type, ...]]] = {
     "create_file": {"overwrite": bool, "expected_hash": str},
     "apply_unified_diff": {"expected_hash": str},
     "run_command": {"approve": bool},
+    "git_log": {"max_count": int},
+    "git_commit": {"paths": list},
+    "git_push": {"remote": str},
     MALFORMED_TOOL_CALL_NAME: {"name": str, "error": str, "raw_arguments": str},
 }
 

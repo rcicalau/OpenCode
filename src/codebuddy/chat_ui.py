@@ -76,7 +76,7 @@ def help_message() -> str:
         "  /compact       Compact session state.\n"
         "  /undo          Undo the last reversible mutation.\n"
         "  /undo-session  Undo reversible mutations from this session.\n"
-        "  /diff          Show git diff.\n"
+        "  /diff          Show git review with staged, unstaged, and untracked files.\n"
         "  /branch        Show current branch.\n"
         "  /commit MSG    Commit agent-edited files on the agent branch.\n"
         "  /skills        List project skills. Use /skill-name PROMPT to invoke one.\n"

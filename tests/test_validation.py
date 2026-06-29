@@ -66,6 +66,9 @@ class ValidationHarnessTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual(result.unexpected_files, ["unexpected.py"])
         self.assertIn("unexpected files changed", result.failures[-1])
+        self.assertEqual(result.failure_code, "unexpected_worktree_changes")
+        self.assertIn("git_status", result.recovery_actions)
+        self.assertIn("unexpected.py", result.worktree_report)
 
 
 if __name__ == "__main__":

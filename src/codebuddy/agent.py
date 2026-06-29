@@ -70,7 +70,7 @@ from .workplan import WorkItem, WorkPlan, WorkPlanManager
 from .errors import CodeBuddyError, ConfirmationRequired
 
 
-READ_ONLY_TOOL_NAMES = {"explore_project", "read_text", "search"}
+READ_ONLY_TOOL_NAMES = {"explore_project", "read_text", "search", "git_status", "git_diff", "git_log", "git_remote_info", "git_merge_ready"}
 
 
 @dataclass(slots=True)
@@ -236,6 +236,7 @@ class CodeBuddyAgent:
             self._mark_plan,
             self._record_changed_file,
             self._current_changed_files_snapshot,
+            git_manager=self.git_manager,
         )
 
     def handle(self, prompt: str, event_sink=None) -> AgentResult:
@@ -602,8 +603,11 @@ class CodeBuddyAgent:
         self.ledger.validation_state = {
             "passed": validation.passed,
             "failures": validation.failures,
+            "failure_code": validation.failure_code,
+            "recovery_actions": validation.recovery_actions,
             "touched_files": validation.touched_files,
             "unexpected_files": validation.unexpected_files,
+            "worktree_report": validation.worktree_report,
         }
         self._mark_plan("Validate outcome", "completed" if validation.passed else "pending")
         detail = "passed" if validation.passed else f"failed ({len(validation.failures)} failures)"
@@ -632,6 +636,15 @@ class CodeBuddyAgent:
 
     def _validation_failed_message(self) -> str:
         failures = self.ledger.validation_state.get("failures") if isinstance(self.ledger.validation_state, dict) else None
+        failure_code = self.ledger.validation_state.get("failure_code") if isinstance(self.ledger.validation_state, dict) else None
+        if failure_code == "unexpected_worktree_changes":
+            unexpected = self.ledger.validation_state.get("unexpected_files") or []
+            files = ", ".join(str(path) for path in unexpected[:5]) if unexpected else "unknown files"
+            return (
+                "Validation found unexpected worktree changes outside the current Buddy edit set: "
+                f"{files}. I will preserve those changes. Next recovery step: inspect git status, keep user changes separate, "
+                "and retry validation or commit only the expected agent-owned files."
+            )
         if not failures:
             return "Validation failed after edits. Review validation output before continuing."
         detail = "; ".join(str(failure) for failure in failures[:3])
@@ -724,11 +737,80 @@ class CodeBuddyAgent:
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
+            "git_status": {
+                "type": "function",
+                "function": {
+                    "name": "git_status",
+                    "description": "Inspect the current project's git branch and porcelain status.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            "git_diff": {
+                "type": "function",
+                "function": {
+                    "name": "git_diff",
+                    "description": "Show a review-grade git diff summary for staged, unstaged, and untracked changes.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            "git_log": {
+                "type": "function",
+                "function": {
+                    "name": "git_log",
+                    "description": "Read recent git history for the current project.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"max_count": {"type": "integer"}},
+                    },
+                },
+            },
+            "git_remote_info": {
+                "type": "function",
+                "function": {
+                    "name": "git_remote_info",
+                    "description": "Inspect the origin remote provider, host, owner, and repository.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            "git_merge_ready": {
+                "type": "function",
+                "function": {
+                    "name": "git_merge_ready",
+                    "description": "Check whether the agent branch is clean, validated, and ready to merge.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            "git_commit": {
+                "type": "function",
+                "function": {
+                    "name": "git_commit",
+                    "description": "Commit only agent-owned changed files on the agent branch.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string"},
+                            "paths": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["message"],
+                    },
+                },
+            },
+            "git_push": {
+                "type": "function",
+                "function": {
+                    "name": "git_push",
+                    "description": "Push the current agent branch to a configured remote.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"remote": {"type": "string"}},
+                    },
+                },
+            },
         }
         enabled = []
         allowed = set(schemas)
         if self.ledger.mode in {"chat", "scope"}:
-            allowed = {"explore", "read", "search"}
+            allowed = {"explore", "read", "search", "git_status", "git_diff", "git_log", "git_remote_info", "git_merge_ready"}
         for key, schema in schemas.items():
             if key in allowed and self.enabled_tools.get(key, True):
                 enabled.append(schema)

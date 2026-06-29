@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import subprocess
 import time
@@ -71,12 +72,20 @@ class GitManager:
             return None
         branch = status.branch
         if branch and branch.startswith(self.branch_prefix):
+            self._record_state(agent_branch=branch)
             return branch
         if _user_dirty_porcelain(status.porcelain).strip() and not approve_protected:
             raise ConfirmationRequired("dirty worktree requires explicit approval before creating an agent branch")
         if self.agent_branch_required or branch in self.protected_branches or branch is None:
             new_branch = self.make_branch_name(objective)
+            starting_commit = self.current_commit()
             self._git(["switch", "-c", new_branch], check=True, approve=approve_protected or self.agent_branch_required)
+            self._record_state(
+                starting_branch=branch,
+                starting_commit=starting_commit,
+                agent_branch=new_branch,
+                base_commit=starting_commit,
+            )
             return new_branch
         return branch
 
@@ -87,6 +96,39 @@ class GitManager:
 
     def diff(self) -> str:
         return self._run(["git", "diff"], check=False).stdout
+
+    def diff_review(self) -> str:
+        status = self.status()
+        if not status.is_repo:
+            return "not a git repository"
+        staged = self._git(["diff", "--cached", "--name-only"], check=False).stdout.splitlines()
+        unstaged = self._git(["diff", "--name-only"], check=False).stdout.splitlines()
+        untracked = [line[3:].strip() for line in status.porcelain.splitlines() if line.startswith("?? ")]
+        stat = self._git(["diff", "--stat"], check=False).stdout.strip()
+        staged_stat = self._git(["diff", "--cached", "--stat"], check=False).stdout.strip()
+        diff = self.diff().strip()
+        lines = [
+            "Git review",
+            f"Branch: {status.branch or 'detached HEAD'}",
+            f"Dirty: {bool(_user_dirty_porcelain(status.porcelain).strip())}",
+        ]
+        remote = self.remote_info()
+        if remote:
+            lines.append(f"Remote: {remote.name} {remote.provider} {remote.owner}/{remote.repo}")
+        lines.append("")
+        lines.append("Staged files:")
+        lines.extend(f"- {path}" for path in staged) if staged else lines.append("- none")
+        lines.append("Unstaged files:")
+        lines.extend(f"- {path}" for path in unstaged) if unstaged else lines.append("- none")
+        lines.append("Untracked files:")
+        lines.extend(f"- {path}" for path in untracked) if untracked else lines.append("- none")
+        if staged_stat:
+            lines.extend(["", "Staged diff stat:", staged_stat])
+        if stat:
+            lines.extend(["", "Unstaged diff stat:", stat])
+        if diff:
+            lines.extend(["", "Unstaged diff:", diff])
+        return "\n".join(lines)
 
     def changed_files(self) -> list[str]:
         status = self._run(["git", "status", "--porcelain"], check=False)
@@ -104,11 +146,20 @@ class GitManager:
             raise RuntimeError("checkpoint commits require an agent-owned branch")
         if not paths:
             return False
-        self._git(["add", "--", *paths], check=True, approve=True)
+        normalized_paths = _dedupe_paths(paths)
+        preexisting_staged = self._git(["diff", "--cached", "--name-only"], check=True).stdout.splitlines()
+        if preexisting_staged:
+            raise RuntimeError("pre-existing staged changes require user action before checkpoint commit: " + ", ".join(preexisting_staged))
+        self._git(["add", "--", *normalized_paths], check=True, approve=True)
         staged = self._git(["diff", "--cached", "--name-only"], check=True).stdout.splitlines()
         if not staged:
             return False
+        unexpected_staged = sorted(set(staged) - set(normalized_paths))
+        if unexpected_staged:
+            raise RuntimeError("checkpoint staged unexpected files: " + ", ".join(unexpected_staged))
         self._git(["commit", "-m", message], check=True, approve=True)
+        commit = self.current_commit()
+        self._append_state_list("checkpoints", {"commit": commit, "message": message, "files": sorted(staged)})
         return True
 
     def has_remote(self, name: str = "origin") -> bool:
@@ -137,7 +188,74 @@ class GitManager:
         if not self.has_remote(remote):
             return False
         self._git(["push", "-u", remote, status.branch], check=True, approve=True)
+        self._append_state_list("pushes", {"remote": remote, "branch": status.branch, "commit": self.current_commit()})
         return True
+
+    def current_commit(self) -> str | None:
+        completed = self._git(["rev-parse", "HEAD"], check=False)
+        if completed.returncode != 0:
+            return None
+        value = completed.stdout.strip()
+        return value or None
+
+    def log(self, max_count: int = 5) -> str:
+        bounded = max(1, min(max_count, 50))
+        return self._git(["log", f"--max-count={bounded}", "--oneline", "--decorate"], check=False).stdout
+
+    def tracking_status(self) -> dict[str, int | bool | str | None]:
+        status = self.status()
+        payload: dict[str, int | bool | str | None] = {
+            "has_upstream": False,
+            "ahead": 0,
+            "behind": 0,
+            "upstream": None,
+        }
+        if not status.is_repo:
+            return payload
+        upstream = self._git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], check=False)
+        if upstream.returncode != 0:
+            return payload
+        payload["has_upstream"] = True
+        payload["upstream"] = upstream.stdout.strip()
+        counts = self._git(["rev-list", "--left-right", "--count", "@{u}...HEAD"], check=False)
+        if counts.returncode == 0:
+            parts = counts.stdout.split()
+            if len(parts) >= 2:
+                payload["behind"] = int(parts[0])
+                payload["ahead"] = int(parts[1])
+        return payload
+
+    def merge_ready(self, validation_passed: bool | None = None) -> dict[str, object]:
+        status = self.status()
+        dirty = bool(_user_dirty_porcelain(status.porcelain).strip()) if status.is_repo else False
+        tracking = self.tracking_status() if status.is_repo else {"has_upstream": False, "ahead": 0, "behind": 0, "upstream": None}
+        reasons: list[str] = []
+        if not status.is_repo:
+            reasons.append("not a git repository")
+        if status.is_repo and not (status.branch or "").startswith(self.branch_prefix):
+            reasons.append("not on an agent branch")
+        if dirty:
+            reasons.append("worktree has uncommitted changes")
+        if tracking.get("behind"):
+            reasons.append(f"branch is behind upstream by {tracking.get('behind')} commits")
+        if validation_passed is not True:
+            reasons.append("validation has not passed")
+        return {
+            "ready": status.is_repo and not dirty and not tracking.get("behind") and validation_passed is True,
+            "branch": status.branch,
+            "tracking": tracking,
+            "reasons": reasons,
+        }
+
+    def session_state(self) -> dict:
+        path = self._state_path()
+        if not path.exists():
+            return _default_state(self.project_root)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return _default_state(self.project_root)
+        return _merge_state_defaults(data, self.project_root)
 
     def _run(self, args: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         completed, timed_out, _duration = self._run_git_process(args)
@@ -231,6 +349,30 @@ class GitManager:
     def _has_project_git_metadata(self) -> bool:
         return (self.project_root / ".git").exists()
 
+    def _state_path(self) -> Path:
+        return self.project_root / ".buddy" / "git" / "state.json"
+
+    def _save_state(self, state: dict) -> None:
+        path = self._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _record_state(self, **updates) -> None:
+        state = self.session_state()
+        for key, value in updates.items():
+            if value is not None or key not in state:
+                state[key] = value
+        self._save_state(state)
+
+    def _append_state_list(self, key: str, item: dict) -> None:
+        state = self.session_state()
+        values = state.setdefault(key, [])
+        if not isinstance(values, list):
+            values = []
+            state[key] = values
+        values.append(item)
+        self._save_state(state)
+
 
 def _quote_args(args: list[str]) -> str:
     quoted = []
@@ -240,6 +382,33 @@ def _quote_args(args: list[str]) -> str:
         else:
             quoted.append(arg)
     return " ".join(quoted)
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    return list(dict.fromkeys(path.replace("\\", "/") for path in paths if path))
+
+
+def _default_state(project_root: Path) -> dict:
+    return {
+        "project_root": str(project_root.resolve()),
+        "starting_branch": None,
+        "starting_commit": None,
+        "agent_branch": None,
+        "base_commit": None,
+        "checkpoints": [],
+        "pushes": [],
+    }
+
+
+def _merge_state_defaults(data: dict, project_root: Path) -> dict:
+    merged = _default_state(project_root)
+    if isinstance(data, dict):
+        merged.update(data)
+    if not isinstance(merged.get("checkpoints"), list):
+        merged["checkpoints"] = []
+    if not isinstance(merged.get("pushes"), list):
+        merged["pushes"] = []
+    return merged
 
 
 def _branch_from_status_header(header: str) -> str | None:
