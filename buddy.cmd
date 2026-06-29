@@ -2,7 +2,7 @@
 setlocal
 set "BUDDY_HOME=%~dp0"
 if not defined CODEBUDDY_START_DIR set "CODEBUDDY_START_DIR=%CD%"
-set "PYTHONPATH=%BUDDY_HOME%src;%PYTHONPATH%"
+set "PYTHONPATH=%BUDDY_HOME%src;%CODEBUDDY_START_DIR%;%CODEBUDDY_START_DIR%\src;%PYTHONPATH%"
 set "BUDDY_PYTHON=python"
 
 call :ensure_python312

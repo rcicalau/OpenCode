@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.auth import auth_check
-from codebuddy.azure_openai_llm import AzureAuthOpenAIClient, load_auth_token
+from codebuddy.azure_openai_llm import AzureAuthOpenAIClient, load_auth_token, load_import_value
 from codebuddy.errors import ConfigError
 from codebuddy.llm import Message
 
@@ -20,7 +20,10 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.created_clients = []
         self.created_http_clients = []
-        self.old_modules = {name: sys.modules.get(name) for name in ("auth", "ai_mart", "azure_auth", "openai", "httpx")}
+        self.old_modules = {
+            name: sys.modules.get(name)
+            for name in ("auth", "ai_mart", "azure_auth", "broker", "broker.ai_mart", "openai", "httpx")
+        }
 
     def tearDown(self) -> None:
         for name, module in self.old_modules.items():
@@ -208,6 +211,47 @@ class AzureOpenAILlmTests(unittest.TestCase):
         )
 
         self.assertEqual(client.base_url, "https://aimark.example/openai/v1")
+
+    def test_provider_config_loads_base_url_from_project_src_import(self) -> None:
+        src = self.root / "src"
+        src.mkdir()
+        (src / "ai_mart.py").write_text('base_url = "https://aimark-src.example/openai/v1"\n', encoding="utf-8")
+
+        value = load_import_value("ai_mart:base_url", project_root=self.root)
+
+        self.assertEqual(value, "https://aimark-src.example/openai/v1")
+
+    def test_project_src_package_imports_are_available(self) -> None:
+        package = self.root / "src" / "broker"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "ai_mart.py").write_text('base_url = "https://pkg.example/openai/v1"\n', encoding="utf-8")
+
+        value = load_import_value("broker.ai_mart:base_url", project_root=self.root)
+
+        self.assertEqual(value, "https://pkg.example/openai/v1")
+
+    def test_project_src_auth_client_can_import_src_sibling_module(self) -> None:
+        src = self.root / "src"
+        src.mkdir()
+        (src / "ai_mart.py").write_text(
+            "class AuthClient:\n"
+            "    def authenticate_broker(self):\n"
+            "        return type('Token', (), {'access_token': 'src-token'})()\n"
+            "auth_client = AuthClient()\n",
+            encoding="utf-8",
+        )
+        (src / "azure_auth.py").write_text(
+            "from ai_mart import auth_client\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return auth_client.authenticate_broker()\n",
+            encoding="utf-8",
+        )
+
+        token = load_auth_token(auth_client_path="azure_auth:AzureAuthClient", project_root=self.root)
+
+        self.assertEqual(token.value, "src-token")
 
     def test_external_default_auth_client_uses_access_token_contract(self) -> None:
         (self.root / "azure_auth.py").write_text(

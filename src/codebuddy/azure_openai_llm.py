@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from .errors import ConfigError
@@ -12,6 +15,7 @@ from .tool_calls import parse_native_tool_calls
 
 DEFAULT_AUTH_CLIENT = "azure_auth:AzureAuthClient"
 DEFAULT_TOKEN_METHOD = "get_token"
+_PROTECTED_PROJECT_MODULES = {"codebuddy"}
 
 
 class AzureAuthOpenAIClient:
@@ -120,7 +124,8 @@ def load_auth_token(
     method = getattr(auth_client, token_method, None)
     if not callable(method):
         raise ConfigError(f"auth client {auth_client_path} has no callable {token_method} method")
-    raw_token = method()
+    with _project_sys_path(project_root):
+        raw_token = method()
     token_value = getattr(raw_token, "access_token", getattr(raw_token, "token", raw_token))
     if not token_value:
         raise ConfigError(f"auth client {auth_client_path}.{token_method} returned an empty token")
@@ -129,12 +134,13 @@ def load_auth_token(
 
 def load_import_value(import_path: str, project_root: Path | None = None) -> Any:
     module_name, value_name = _split_import_path(import_path)
-    module_file = (project_root / f"{module_name}.py") if project_root and "." not in module_name else None
+    module_file = _first_existing_module_file(module_name, project_root)
     if module_file and module_file.exists():
-        module = _load_module_from_file(module_name, module_file)
+        module = _load_module_from_file(module_name, module_file, project_root)
     else:
         try:
-            module = importlib.import_module(module_name)
+            with _project_sys_path(project_root):
+                module = importlib.import_module(module_name)
         except ImportError as exc:
             raise ConfigError(f"could not import {module_name!r} for {import_path}: {exc}") from exc
     if not hasattr(module, value_name):
@@ -144,12 +150,13 @@ def load_import_value(import_path: str, project_root: Path | None = None) -> Any
 
 def _load_auth_client(auth_client_path: str, project_root: Path | None) -> Any:
     module_name, class_name = _split_import_path(auth_client_path)
-    auth_file = (project_root / f"{module_name}.py") if project_root and "." not in module_name else None
+    auth_file = _first_existing_module_file(module_name, project_root)
     if auth_file and auth_file.exists():
-        module = _load_module_from_file(module_name, auth_file)
+        module = _load_module_from_file(module_name, auth_file, project_root)
     else:
         try:
-            module = importlib.import_module(module_name)
+            with _project_sys_path(project_root):
+                module = importlib.import_module(module_name)
         except ImportError as exc:
             raise ConfigError(f"could not import auth client module {module_name!r}: {exc}") from exc
     auth_class = getattr(module, class_name, None)
@@ -168,13 +175,116 @@ def _split_import_path(path: str) -> tuple[str, str]:
     return module_name, class_name
 
 
-def _load_module_from_file(module_name: str, path: Path):
+def _first_existing_module_file(module_name: str, project_root: Path | None) -> Path | None:
+    if not project_root or "." in module_name:
+        return None
+    for base in _project_import_paths(project_root):
+        candidate = base / f"{module_name}.py"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _project_import_paths(project_root: Path | None) -> list[Path]:
+    if not project_root:
+        return []
+    root = project_root.resolve()
+    paths = [root]
+    src = root / "src"
+    if src.exists():
+        paths.append(src)
+    return paths
+
+
+@contextmanager
+def _project_sys_path(project_root: Path | None, *extra_paths: Path):
+    paths = [*extra_paths, *_project_import_paths(project_root)]
+    inserted: list[str] = []
+    module_snapshot = _snapshot_project_modules(project_root)
+    try:
+        _evict_non_project_modules(project_root, module_snapshot)
+        for path in reversed(paths):
+            value = str(path.resolve())
+            if value not in sys.path:
+                sys.path.insert(0, value)
+                inserted.append(value)
+        yield
+    finally:
+        _restore_project_modules(project_root, module_snapshot)
+        for value in inserted:
+            try:
+                sys.path.remove(value)
+            except ValueError:
+                pass
+
+
+def _load_module_from_file(module_name: str, path: Path, project_root: Path | None) -> ModuleType:
     spec = importlib.util.spec_from_file_location(f"_codebuddy_project_{module_name}_{abs(hash(path))}", path)
     if spec is None or spec.loader is None:
         raise ConfigError(f"could not load auth client module from {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with _project_sys_path(project_root, path.parent):
+        spec.loader.exec_module(module)
     return module
+
+
+def _project_module_names(project_root: Path | None) -> set[str]:
+    names: set[str] = set()
+    for base in _project_import_paths(project_root):
+        if not base.exists():
+            continue
+        for child in base.iterdir():
+            if child.name.startswith("."):
+                continue
+            if child.is_file() and child.suffix == ".py":
+                names.add(child.stem)
+            elif child.is_dir() and (child / "__init__.py").exists():
+                names.add(child.name)
+    return names - _PROTECTED_PROJECT_MODULES
+
+
+def _snapshot_project_modules(project_root: Path | None) -> dict[str, Any]:
+    local_names = _project_module_names(project_root)
+    if not local_names:
+        return {}
+    return {
+        name: module
+        for name, module in sys.modules.items()
+        if name.split(".", 1)[0] in local_names
+    }
+
+
+def _evict_non_project_modules(project_root: Path | None, snapshot: dict[str, Any]) -> None:
+    project_paths = _project_import_paths(project_root)
+    for name, module in list(snapshot.items()):
+        if not _module_origin_under(module, project_paths):
+            sys.modules.pop(name, None)
+
+
+def _restore_project_modules(project_root: Path | None, snapshot: dict[str, Any]) -> None:
+    local_names = _project_module_names(project_root)
+    for name in list(sys.modules):
+        if name.split(".", 1)[0] in local_names and name not in snapshot:
+            sys.modules.pop(name, None)
+    for name, module in snapshot.items():
+        sys.modules[name] = module
+
+
+def _module_origin_under(module: Any, roots: list[Path]) -> bool:
+    origin = getattr(module, "__file__", None)
+    if not origin:
+        return False
+    try:
+        resolved = Path(str(origin)).resolve()
+    except OSError:
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _model_dump(value: Any) -> dict[str, Any]:

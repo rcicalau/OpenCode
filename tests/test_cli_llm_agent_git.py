@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -440,6 +441,47 @@ model = "sonar-pro"
         self.assertIn('"provider": "azure_openai"', stdout.getvalue())
         self.assertIn('"auth": "client azure_auth:AzureAuthClient"', stdout.getvalue())
         self.assertIn('"base_url": "set"', stdout.getvalue())
+
+    def test_doctor_uses_start_dir_project_src_for_ai_mart_imports(self) -> None:
+        target = Path(self.tmp.name) / "other-project"
+        install_dir = Path(self.tmp.name) / "buddy-install"
+        target_src = target / "src"
+        target_src.mkdir(parents=True)
+        install_dir.mkdir()
+        (target_src / "ai_mart.py").write_text(
+            'base_url = "https://other-project.example/openai/v1"\n'
+            "class AuthClient:\n"
+            "    def authenticate_broker(self):\n"
+            "        return type('Token', (), {'access_token': 'other-project-token'})()\n"
+            "auth_client = AuthClient()\n",
+            encoding="utf-8",
+        )
+        (target_src / "azure_auth.py").write_text(
+            "from ai_mart import auth_client\n\n"
+            "class AzureAuthClient:\n"
+            "    def get_token(self):\n"
+            "        return auth_client.authenticate_broker()\n",
+            encoding="utf-8",
+        )
+        old_start = os.environ.get("CODEBUDDY_START_DIR")
+        os.environ["CODEBUDDY_START_DIR"] = str(target)
+        stdout = StringIO()
+
+        try:
+            os.chdir(install_dir)
+            with redirect_stdout(stdout):
+                code = main(["doctor"])
+        finally:
+            if old_start is None:
+                os.environ.pop("CODEBUDDY_START_DIR", None)
+            else:
+                os.environ["CODEBUDDY_START_DIR"] = old_start
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(Path(payload["project_root"]), target.resolve())
+        self.assertEqual(payload["base_url"], "set")
+        self.assertNotIn("auth_error", payload)
 
     def test_auth_set_persists_provider_key_via_writer_without_project_config_secret(self) -> None:
         written: dict[str, str] = {}
