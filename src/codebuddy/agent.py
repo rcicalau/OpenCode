@@ -52,6 +52,7 @@ from .git_manager import GitManager
 from .llm import LLMClient, Message
 from .objective_state import APPROVAL_WAIT, BLOCKED, COMPLETE, IDLE, PLANNING, WORKING
 from .project_context import build_project_context
+from .researcher import Researcher
 from .search import Searcher
 from .session import PlanItem, SessionLedger
 from .steering import SteeringInbox
@@ -179,6 +180,7 @@ class CodeBuddyAgent:
         searcher: Searcher | None = None,
         validation: ValidationHarness | None = None,
         enabled_tools: dict[str, bool] | None = None,
+        researcher: Researcher | None = None,
         max_tool_iterations: int | None = 200,
         max_work_items_per_prompt: int = 200,
         max_item_attempts: int = 3,
@@ -197,6 +199,7 @@ class CodeBuddyAgent:
         self.searcher = searcher
         self.validation = validation
         self.enabled_tools = enabled_tools or {}
+        self.researcher = researcher
         if max_tool_iterations is not None and max_tool_iterations < 0:
             raise ValueError("max_tool_iterations must be non-negative or None")
         self.max_tool_iterations = max_tool_iterations or None
@@ -250,6 +253,7 @@ class CodeBuddyAgent:
                     f"{project_context.files_count} files, {len(project_context.key_files)} key files, {project_context.symbols_count} symbols",
                 )
             )
+        model_context = project_context.text
         if mode == "execute":
             self.ledger.objective = prompt
             self.ledger.plan = [PlanItem("Understand objective", "completed"), PlanItem("Gather context", "pending"), PlanItem("Validate outcome", "pending")]
@@ -273,14 +277,17 @@ class CodeBuddyAgent:
                 )
             if branch:
                 events.append(AgentEvent("git", "Git", f"agent branch {branch}"))
+            model_context = self._context_with_research(prompt, mode, model_context, events)
             workplans = WorkPlanManager(self.project_root, self.ledger.session_id, self.edit_broker.policy)
             work_plan = workplans.active_or_new(prompt)
             if work_plan:
                 self.ledger.objective = work_plan.objective
                 events.append(AgentEvent("plan", "Plan", workplans.summary(work_plan)))
-                return self._handle_work_plan(workplans, work_plan, project_context.text, events)
+                return self._handle_work_plan(workplans, work_plan, model_context, events)
+        elif mode == "scope":
+            model_context = self._context_with_research(prompt, mode, model_context, events)
         validate_events_before = _validation_event_count(events)
-        message = self._run_model_loop(prompt, project_context.text, events)
+        message = self._run_model_loop(prompt, model_context, events)
         validated_during_prompt = _validation_event_count(events) > validate_events_before
         validation_passed = self._auto_validate_after_edits(events, validated_during_prompt) if mode == "execute" else None
         if validation_passed is False:
@@ -538,6 +545,17 @@ class CodeBuddyAgent:
         if not steering:
             return prompt
         return f"{prompt}\n\nUser steering:\n{steering}\n"
+
+    def _context_with_research(self, prompt: str, mode: str, project_context: str, events: list[AgentEvent]) -> str:
+        if not self.researcher:
+            return project_context
+        brief = self.researcher.research(prompt, project_context, mode)
+        if not brief:
+            if getattr(self.researcher, "last_error", None):
+                events.append(AgentEvent("research", "Research", str(self.researcher.last_error), "failed"))
+            return project_context
+        events.append(AgentEvent("research", "Research", f"{len(brief.relevant_files)} relevant files"))
+        return project_context + "\n\n" + brief.to_context()
 
     def _run_text_tool_calls(self, text: str, events: list[AgentEvent]) -> list[str]:
         return [result.to_prompt() for result in self._run_tool_calls(parse_text_tool_calls(text), events)]

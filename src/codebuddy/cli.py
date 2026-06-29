@@ -30,6 +30,7 @@ from .project_context import ProjectContext, bootstrap_project_memory
 from .project_scaffold import ensure_buddy_scaffold
 from .project_session import ProjectSession
 from .redaction import Redactor
+from .researcher import Researcher
 from .search import Searcher
 from .session import SessionManager
 from .slash import SlashCommandHandler, _workplan_payload
@@ -374,6 +375,7 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
     llm_config = copy.deepcopy(config)
     llm_config["_runtime_project_root"] = str(root)
     llm = build_llm_client(llm_config)
+    researcher = build_researcher(llm_config)
     git_config = config.get("git", {})
     agent = CodeBuddyAgent(
         root,
@@ -391,6 +393,7 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         Searcher(edit_broker.policy),
         ValidationHarness(root, command_broker, config.get("validation", {}).get("commands", [])),
         config.get("tools", {}),
+        researcher=researcher,
         max_tool_iterations=int(config.get("agent", {}).get("max_tool_iterations", 0)),
         max_work_items_per_prompt=int(config.get("agent", {}).get("max_work_items_per_prompt", 200)),
         max_item_attempts=int(config.get("agent", {}).get("max_item_attempts", 3)),
@@ -470,29 +473,70 @@ def chat_loop(
         print("")
 
 
-def build_llm_client(config: dict):
+def build_llm_client(config: dict, role_name: str = "main"):
     fake_response = os.environ.get("CODEBUDDY_FAKE_LLM_RESPONSE")
-    if fake_response is not None:
+    if fake_response is not None and role_name == "main":
         return FakeLLMClient([fake_response])
+    return _build_llm_client(config, role_name)
+
+
+def build_researcher(config: dict) -> Researcher | None:
+    role = config.get("model", {}).get("roles", {}).get("researcher")
+    if not isinstance(role, dict) or not bool(role.get("enabled", False)):
+        return None
+    try:
+        client = _build_llm_client(config, "researcher")
+        return Researcher(
+            client,
+            timeout_seconds=float(role.get("timeout_seconds", min(float(config.get("model", {}).get("timeout_seconds", 300)), 120))),
+            rate_limit_retries=int(config.get("agent", {}).get("rate_limit_retries", 4)),
+            rate_limit_backoff_seconds=float(config.get("agent", {}).get("rate_limit_backoff_seconds", 2)),
+            max_context_chars=int(role.get("max_context_chars", 60000)),
+        )
+    except (ConfigError, ValueError):
+        return None
+
+
+def _build_llm_client(config: dict, role_name: str = "main"):
     roles = config.get("model", {}).get("roles", {})
-    main_role = roles.get("main", {})
-    provider_name = main_role.get("provider", "azure_openai")
-    model = main_role.get("model", "openai/gpt-5.4")
+    role = roles.get(role_name)
+    if role is None:
+        if role_name == "main":
+            role = {}
+        else:
+            raise ConfigError(f"unknown model role: {role_name}")
+    if not isinstance(role, dict):
+        raise ConfigError(f"invalid model role: {role_name}")
+    provider_name = role.get("provider", "azure_openai")
     provider = config.get("model", {}).get("providers", {}).get(provider_name)
     if not isinstance(provider, dict):
         raise ConfigError(f"unknown provider: {provider_name}")
     provider = dict(provider)
     provider.setdefault("timeout_seconds", config.get("model", {}).get("timeout_seconds", 300))
+    runtime_root = config.get("_runtime_project_root")
+    project_root = Path(str(runtime_root)) if runtime_root else None
+    model = _resolve_role_model(role, provider, project_root)
+    provider["model"] = model
     if provider_name == "azure_openai":
         from .azure_openai_llm import AzureAuthOpenAIClient
 
-        runtime_root = config.get("_runtime_project_root")
         return AzureAuthOpenAIClient.from_provider_config(
             provider,
             model,
-            project_root=Path(str(runtime_root)) if runtime_root else None,
+            project_root=project_root,
         )
     return OpenAICompatibleClient.from_provider_config(provider, model)
+
+
+def _resolve_role_model(role: dict, provider: dict, project_root: Path | None) -> str:
+    model_import = role.get("model_import")
+    if model_import:
+        value = load_import_value(str(model_import), project_root)
+        if not value:
+            raise ConfigError(f"model_import returned empty value: {model_import}")
+        return str(value)
+    model = role.get("model") or provider.get("model") or "openai/gpt-5.4"
+    return str(model)
 
 
 def bootstrap_memory(root: Path, ledger, config: dict, journal: Journal) -> ProjectContext:

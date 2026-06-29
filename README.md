@@ -80,7 +80,7 @@ Interactive chat uses a colorized terminal UI:
 - Project skills in `.buddy\skills\*.md` are callable as `/skill-name your request`.
 - Agent actions such as git branch creation, file edits, shell commands, searches, and validation are shown inline before the final answer.
 
-Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default, using model `openai/gpt-5.4`.
+Production deployment is configured for an Azure-authenticated OpenAI-compatible endpoint by default. The main coding model uses `openai/gpt-5.4`. A secondary read-only researcher role can use Qwen from AI Mart when `ai_mart.py` exposes `QWEN_RESEARCH_MODEL`.
 
 The repo includes a project config template:
 
@@ -88,12 +88,18 @@ The repo includes a project config template:
 examples\project_config.azure_openai.toml
 ```
 
-Code Buddy assumes your target project or `PYTHONPATH` provides `ai_mart.py` and `azure_auth.py`. The default Azure provider imports the endpoint from `ai_mart:base_url` and loads `azure_auth:AzureAuthClient`. The expected token method is `get_token()`, which can return either a string or an object with `.access_token`. The default provider config is:
+Code Buddy assumes your target project or `PYTHONPATH` provides `ai_mart.py` and `azure_auth.py`. The default Azure provider imports the endpoint from `ai_mart:base_url`, the Qwen researcher model from `ai_mart:QWEN_RESEARCH_MODEL`, and loads `azure_auth:AzureAuthClient`. The expected token method is `get_token()`, which can return either a string or an object with `.access_token`. The default provider config is:
 
 ```toml
 [model.roles.main]
 provider = "azure_openai"
 model = "openai/gpt-5.4"
+
+[model.roles.researcher]
+provider = "azure_openai"
+model_import = "ai_mart:QWEN_RESEARCH_MODEL"
+enabled = true
+temperature = 0.0
 
 [model.providers.azure_openai]
 base_url_import = "ai_mart:base_url"
@@ -101,6 +107,8 @@ auth_client = "azure_auth:AzureAuthClient"
 token_method = "get_token"
 verify_ssl = false
 ```
+
+The researcher role is optional at runtime. If `QWEN_RESEARCH_MODEL` is missing or the researcher client cannot be configured, Code Buddy falls back to the main GPT-5.4 loop and continues the task. The researcher is never given tools; it only returns a short brief that is appended to scope and execute prompts.
 
 For development and provider smoke testing with Perplexity, set `PERPLEXITY_API_KEY` and configure the main provider as `perplexity` in `<project>\.buddy\config.toml`.
 
@@ -161,6 +169,7 @@ API keys and Azure tokens are intentionally not stored in project `.buddy\config
 
 ```python
 base_url = "https://your-endpoint/openai/v1"
+QWEN_RESEARCH_MODEL = "qwen/qwen3.6-27b"
 
 class AiMartAuthClient:
     def authenticate_broker(self):

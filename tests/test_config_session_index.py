@@ -54,6 +54,11 @@ class ConfigSessionIndexTests(unittest.TestCase):
 
         self.assertEqual(loaded.config["model"]["roles"]["main"]["provider"], "azure_openai")
         self.assertEqual(loaded.config["model"]["roles"]["main"]["model"], "openai/gpt-5.4")
+        researcher = loaded.config["model"]["roles"]["researcher"]
+        self.assertEqual(researcher["provider"], "azure_openai")
+        self.assertEqual(researcher["model_import"], "ai_mart:QWEN_RESEARCH_MODEL")
+        self.assertTrue(researcher["enabled"])
+        self.assertEqual(researcher["temperature"], 0.0)
         provider = loaded.config["model"]["providers"]["azure_openai"]
         self.assertEqual(provider["base_url_import"], "ai_mart:base_url")
         self.assertNotIn("base_url_env", provider)

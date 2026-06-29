@@ -29,6 +29,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
                 "model": "openai/gpt-5.4",
                 "temperature": 0.0,
             },
+            "researcher": {
+                "provider": "azure_openai",
+                "model_import": "ai_mart:QWEN_RESEARCH_MODEL",
+                "temperature": 0.0,
+                "enabled": True,
+                "timeout_seconds": 120,
+                "max_context_chars": 60000,
+            },
         },
         "providers": {
             "azure_openai": {
