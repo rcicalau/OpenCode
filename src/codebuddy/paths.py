@@ -28,14 +28,7 @@ DEFAULT_SENSITIVE_PATTERNS = [
 
 def find_project_root(start: Path | None = None) -> Path:
     current = (start or Path.cwd()).resolve()
-    boundaries = {
-        Path(os.environ.get("USERPROFILE", str(Path.home()))).resolve(),
-        Path.home().resolve(),
-    }
-    home_drive = os.environ.get("HOMEDRIVE")
-    home_path = os.environ.get("HOMEPATH")
-    if home_drive and home_path:
-        boundaries.add(Path(home_drive + home_path).resolve())
+    boundaries = _home_boundaries()
     for path in [current, *current.parents]:
         if path in boundaries and current != path:
             break
@@ -56,16 +49,53 @@ def is_project_marker(path: Path) -> bool:
     )
 
 
+def find_buddy_project_root(start: Path | None = None) -> Path | None:
+    current = (start or Path.cwd()).resolve()
+    boundaries = _home_boundaries()
+    for path in [current, *current.parents]:
+        if path in boundaries and current != path:
+            break
+        if is_buddy_project_marker(path):
+            return path
+    return None
+
+
+def is_buddy_project_marker(path: Path) -> bool:
+    return (
+        (path / ".buddy" / "config.toml").exists()
+        or (path / ".buddy" / "sessions" / "current.json").exists()
+        or (path / "BUDDY.md").exists()
+    )
+
+
+def resolve_launch_start_dir(start: str | Path | None = None) -> Path:
+    if start:
+        return Path(start).expanduser().resolve()
+    if os.environ.get("CODEBUDDY_START_DIR"):
+        return Path(str(os.environ["CODEBUDDY_START_DIR"])).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
 def resolve_project_root(explicit_root: str | Path | None = None, start: Path | None = None) -> Path:
     if explicit_root:
         return Path(explicit_root).expanduser().resolve()
     env_root = os.environ.get("CODEBUDDY_PROJECT_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
-    start_root = start
-    if start_root is None and os.environ.get("CODEBUDDY_START_DIR"):
-        start_root = Path(str(os.environ["CODEBUDDY_START_DIR"])).expanduser()
-    return find_project_root(start_root)
+    start_root = resolve_launch_start_dir(start)
+    return find_buddy_project_root(start_root) or start_root
+
+
+def _home_boundaries() -> set[Path]:
+    boundaries = {
+        Path(os.environ.get("USERPROFILE", str(Path.home()))).resolve(),
+        Path.home().resolve(),
+    }
+    home_drive = os.environ.get("HOMEDRIVE")
+    home_path = os.environ.get("HOMEPATH")
+    if home_drive and home_path:
+        boundaries.add(Path(home_drive + home_path).resolve())
+    return boundaries
 
 
 @dataclass(slots=True)

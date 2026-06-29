@@ -24,7 +24,7 @@ from .git_manager import GitManager
 from .global_state import get_last_project_root, set_last_project_root, set_project_binding
 from .journal import Journal
 from .llm import FakeLLMClient, OpenAICompatibleClient
-from .paths import DEFAULT_SENSITIVE_PATTERNS, PathPolicy, resolve_project_root
+from .paths import DEFAULT_SENSITIVE_PATTERNS, PathPolicy, resolve_launch_start_dir, resolve_project_root
 from .project_context import ProjectContext, bootstrap_project_memory
 from .project_scaffold import ensure_buddy_scaffold
 from .project_session import ProjectSession
@@ -74,8 +74,8 @@ def _main(argv: list[str] | None = None) -> int:
     auth_provider = argv[2] if len(argv) > 2 and command == "auth" else None
     prompt_args = [] if command else argv
 
-    root = resolve_project_root(explicit_root)
-    launch_root = root
+    launch_root = resolve_launch_start_dir()
+    root = resolve_project_root(explicit_root, start=launch_root)
     interactive_work = (command == "chat" or bool(prompt_args)) and sys.stdin.isatty()
     has_fixed_root = bool(explicit_root or os.environ.get("CODEBUDDY_PROJECT_ROOT"))
     if interactive_work and not has_fixed_root:

@@ -205,6 +205,58 @@ class CliLlmAgentGitTests(unittest.TestCase):
 
         self.assertEqual(resolved, caller_project.resolve())
 
+    def test_start_dir_binds_exact_launch_folder_even_under_parent_repo(self) -> None:
+        parent = Path(self.tmp.name) / "parent-repo"
+        caller_project = parent / "project-1"
+        install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
+        caller_project.mkdir(parents=True)
+        install_dir.mkdir(parents=True)
+        (parent / ".git").mkdir()
+        old = os.environ.get("CODEBUDDY_START_DIR")
+        os.environ["CODEBUDDY_START_DIR"] = str(caller_project)
+        stdout = StringIO()
+
+        try:
+            os.chdir(install_dir)
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["status"]), 0)
+        finally:
+            if old is None:
+                os.environ.pop("CODEBUDDY_START_DIR", None)
+            else:
+                os.environ["CODEBUDDY_START_DIR"] = old
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]), caller_project.resolve())
+        self.assertTrue((caller_project / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((parent / ".buddy").exists())
+
+    def test_start_dir_inside_configured_buddy_project_reuses_project_root(self) -> None:
+        target = Path(self.tmp.name) / "configured-target"
+        nested = target / "tools" / "scripts"
+        install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
+        nested.mkdir(parents=True)
+        install_dir.mkdir(parents=True)
+        (target / "BUDDY.md").write_text("# Configured Target\n", encoding="utf-8")
+        old = os.environ.get("CODEBUDDY_START_DIR")
+        os.environ["CODEBUDDY_START_DIR"] = str(nested)
+        stdout = StringIO()
+
+        try:
+            os.chdir(install_dir)
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["status"]), 0)
+        finally:
+            if old is None:
+                os.environ.pop("CODEBUDDY_START_DIR", None)
+            else:
+                os.environ["CODEBUDDY_START_DIR"] = old
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]), target.resolve())
+        self.assertTrue((target / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((nested / ".buddy").exists())
+
     def test_prompt_project_root_uses_native_picker_selection(self) -> None:
         selected = Path(self.tmp.name) / "picked-project"
         stdout = StringIO()
