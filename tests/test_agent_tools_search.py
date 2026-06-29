@@ -93,6 +93,37 @@ class AgentToolsSearchTests(unittest.TestCase):
         self.assertEqual(llm.calls, 2)
         self.assertTrue(any(event.title == "Model" and "rate limited" in event.detail for event in result.events))
 
+    def test_agent_retries_transient_provider_timeout_errors(self) -> None:
+        class FlakyTimeoutLLM:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete(self, messages, tools=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise CodeBuddyError("provider request timed out after 75s")
+                return LLMResponse("Recovered after timeout retry.")
+
+        llm = FlakyTimeoutLLM()
+        agent = CodeBuddyAgent(
+            self.root,
+            self.ledger,
+            llm,
+            self.edit,
+            self.command,
+            GitManager(self.root),
+            Searcher(self.policy),
+            ValidationHarness(self.root, self.command),
+            rate_limit_retries=2,
+            rate_limit_backoff_seconds=0,
+        )
+
+        result = agent.handle("What is here?")
+
+        self.assertEqual(result.message, "Recovered after timeout retry.")
+        self.assertEqual(llm.calls, 2)
+        self.assertTrue(any(event.title == "Model" and "timed out" in event.detail for event in result.events))
+
     def test_text_tool_call_parser(self) -> None:
         text = 'hello <tool_call>{"name":"read_text","arguments":{"path":"a.py"}}</tool_call> bye'
 

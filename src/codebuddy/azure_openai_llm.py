@@ -110,6 +110,7 @@ class AzureAuthOpenAIClient:
                 model=self.model,
                 messages=[{"role": msg.role, "content": msg.content} for msg in messages],
                 tools=tools or None,
+                timeout=self.timeout_seconds,
             )
         finally:
             if client is not None and hasattr(client, "close"):

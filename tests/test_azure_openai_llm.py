@@ -129,6 +129,7 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual(self.created_clients[0].requests[0]["model"], "openai/gpt-5.4")
         self.assertEqual(self.created_clients[0].requests[0]["messages"], [{"role": "user", "content": "hello"}])
         self.assertEqual(self.created_clients[0].requests[0]["tools"], [{"type": "function"}])
+        self.assertEqual(self.created_clients[0].requests[0]["timeout"], 12)
         self.assertTrue(self.created_clients[0].closed)
 
     def test_adapter_refreshes_auth_client_and_retries_once_after_unauthorized(self) -> None:

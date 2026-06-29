@@ -401,11 +401,12 @@ class CodeBuddyAgent:
             try:
                 return self._complete_model_once(messages, tool_schemas)
             except CodeBuddyError as exc:
-                if attempt >= attempts or not _is_rate_limit_error(exc):
+                if attempt >= attempts or not _is_transient_model_error(exc):
                     raise
                 delay = self.rate_limit_backoff_seconds * attempt
                 if events is not None:
-                    events.append(AgentEvent("model", "Model", f"rate limited; retry {attempt}/{self.rate_limit_retries} in {delay:g}s", "running"))
+                    reason = "rate limited" if _is_rate_limit_error(exc) else "timed out"
+                    events.append(AgentEvent("model", "Model", f"{reason}; retry {attempt}/{self.rate_limit_retries} in {delay:g}s", "running"))
                 if delay:
                     time.sleep(delay)
         raise CodeBuddyError("model request failed after retries")
@@ -873,3 +874,26 @@ def _recovery_playbook(results: list[ToolResult]) -> str:
 def _is_rate_limit_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return any(marker in text for marker in ["429", "rate limit", "rate_limit", "too many requests", "quota exceeded", "request limit"])
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if text.startswith("model request timed out after "):
+        return False
+    return any(
+        marker in text
+        for marker in [
+            "timed out",
+            "timeout",
+            "time-out",
+            "read timed out",
+            "connect timeout",
+            "gateway timeout",
+            "504",
+            "deadline exceeded",
+        ]
+    )
+
+
+def _is_transient_model_error(exc: Exception) -> bool:
+    return _is_rate_limit_error(exc) or _is_timeout_error(exc)

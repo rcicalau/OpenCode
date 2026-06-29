@@ -14,10 +14,15 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on Python < 3.1
     import tomli as tomllib
 
 
+MIN_MODEL_TIMEOUT_SECONDS = 300
+DEFAULT_MODEL_TIMEOUT_SECONDS = 300
+DEFAULT_MODEL_TIMEOUT_GRACE_SECONDS = 30
+
+
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
-        "timeout_seconds": 300,
-        "timeout_grace_seconds": 30,
+        "timeout_seconds": DEFAULT_MODEL_TIMEOUT_SECONDS,
+        "timeout_grace_seconds": DEFAULT_MODEL_TIMEOUT_GRACE_SECONDS,
         "roles": {
             "main": {
                 "provider": "azure_openai",
@@ -155,8 +160,28 @@ def load_config(project_root: Path, global_path: Path | None = None) -> ConfigLo
                 raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
             config = deep_merge(config, data)
             sources.append(path)
+    normalize_config(config)
     validate_config(config)
     return ConfigLoadResult(config=config, sources=sources)
+
+
+def normalize_config(config: dict[str, Any]) -> None:
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return
+    timeout = model.get("timeout_seconds", DEFAULT_MODEL_TIMEOUT_SECONDS)
+    if _is_positive_number(timeout) and timeout < MIN_MODEL_TIMEOUT_SECONDS:
+        model["timeout_seconds"] = MIN_MODEL_TIMEOUT_SECONDS
+        timeout = MIN_MODEL_TIMEOUT_SECONDS
+    providers = model.get("providers", {})
+    if not isinstance(providers, dict):
+        return
+    for provider in providers.values():
+        if not isinstance(provider, dict):
+            continue
+        provider_timeout = provider.get("timeout_seconds")
+        if _is_positive_number(provider_timeout) and provider_timeout < MIN_MODEL_TIMEOUT_SECONDS:
+            provider["timeout_seconds"] = MIN_MODEL_TIMEOUT_SECONDS
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -197,6 +222,10 @@ def validate_config(config: dict[str, Any]) -> None:
     compact_max_tokens = config["storage"].get("compact_max_tokens", 4000)
     if not isinstance(compact_max_tokens, int) or compact_max_tokens <= 0:
         raise ConfigError("storage.compact_max_tokens must be a positive integer")
+
+
+def _is_positive_number(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value > 0
 
 
 def redact_config(config: dict[str, Any]) -> dict[str, Any]:

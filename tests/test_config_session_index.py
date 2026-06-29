@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.compaction import compact_ledger
-from codebuddy.config import load_config
+from codebuddy.config import MIN_MODEL_TIMEOUT_SECONDS, load_config
 from codebuddy.errors import SessionRootMismatch
 from codebuddy.indexer import Indexer
 from codebuddy.paths import PathPolicy, find_project_root, resolve_project_root
@@ -260,6 +260,25 @@ class ConfigSessionIndexTests(unittest.TestCase):
         self.assertEqual(loaded.config["agent"]["max_work_items_per_prompt"], 200)
         self.assertEqual(loaded.config["agent"]["max_item_attempts"], 3)
         self.assertTrue(loaded.config["tools"]["explore"])
+
+    def test_stale_low_model_timeout_is_raised_to_production_floor(self) -> None:
+        project_config = self.root / ".buddy" / "config.toml"
+        project_config.parent.mkdir(parents=True)
+        project_config.write_text(
+            """
+[model]
+timeout_seconds = 75
+
+[model.providers.azure_openai]
+timeout_seconds = 75
+""",
+            encoding="utf-8",
+        )
+
+        loaded = load_config(self.root)
+
+        self.assertEqual(loaded.config["model"]["timeout_seconds"], MIN_MODEL_TIMEOUT_SECONDS)
+        self.assertEqual(loaded.config["model"]["providers"]["azure_openai"]["timeout_seconds"], MIN_MODEL_TIMEOUT_SECONDS)
 
     def test_project_context_includes_buddy_md_and_skills(self) -> None:
         ensure_buddy_scaffold(self.root)
