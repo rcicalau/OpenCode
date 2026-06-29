@@ -47,6 +47,7 @@ class Researcher:
         rate_limit_retries: int = 2,
         rate_limit_backoff_seconds: float = 1,
         max_context_chars: int = 60000,
+        model_label: str | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -61,6 +62,7 @@ class Researcher:
         self.rate_limit_retries = rate_limit_retries
         self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
         self.max_context_chars = max_context_chars
+        self.model_label = model_label or _model_label_from_client(llm)
         self.last_error: str | None = None
 
     def research(self, objective: str, project_context: str, mode: str) -> ResearchBrief | None:
@@ -181,6 +183,15 @@ def _clip(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 80)] + "\n\n[research context truncated to configured character budget]"
+
+
+def _model_label_from_client(llm: LLMClient) -> str:
+    model = getattr(llm, "model", None)
+    if model:
+        return f"researcher/{model}"
+    if llm.__class__.__name__ == "FakeLLMClient":
+        return "researcher/fake"
+    return f"researcher/{llm.__class__.__name__}"
 
 
 def _extend_section(lines: list[str], title: str, values: list[str]) -> None:

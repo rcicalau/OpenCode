@@ -20,7 +20,7 @@ class ChatUiTests(unittest.TestCase):
         self.assertIn("Code Buddy", message)
         self.assertIn(f"Project: {Path('C:/repo')}", message)
         self.assertIn("Session: s1", message)
-        self.assertIn("Model: perplexity/sonar-pro", message)
+        self.assertIn("Default model: perplexity/sonar-pro", message)
         self.assertIn("Shift+Enter", message)
 
     def test_help_message_lists_core_commands(self) -> None:
@@ -104,6 +104,26 @@ class ChatUiTests(unittest.TestCase):
             ChatRenderer().events([SimpleNamespace(kind="edit", title="Edit", detail="app.py (+1/-1)", status="done")])
 
         self.assertIn("Edit", stdout.getvalue())
+
+    def test_renderer_prints_model_attributed_thinking_summary(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            ChatRenderer().events(
+                [
+                    SimpleNamespace(
+                        kind="thought",
+                        title="Thinking summary",
+                        detail="I will inspect, patch, and validate.",
+                        status="done",
+                        model="azure_openai/openai/gpt-5.4",
+                    )
+                ]
+            )
+
+        output = stdout.getvalue()
+        self.assertIn("Thinking summary [azure_openai/openai/gpt-5.4]", output)
+        self.assertIn("I will inspect, patch", output)
+        self.assertIn("validate.", output)
 
     def test_renderer_prints_edit_diff_body(self) -> None:
         stdout = StringIO()

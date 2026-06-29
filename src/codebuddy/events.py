@@ -10,3 +10,5 @@ class AgentEvent:
     detail: str = ""
     status: str = "done"
     body: str = ""
+    model: str = ""
+    role: str = ""

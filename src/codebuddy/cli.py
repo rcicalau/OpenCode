@@ -403,6 +403,7 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         model_timeout_grace_seconds=float(config.get("model", {}).get("timeout_grace_seconds", 30)),
         rate_limit_retries=int(config.get("agent", {}).get("rate_limit_retries", 4)),
         rate_limit_backoff_seconds=float(config.get("agent", {}).get("rate_limit_backoff_seconds", 2)),
+        main_model_label=model_route_label(llm_config, "main"),
     )
     result = agent.handle(prompt, event_sink=event_sink)
     append_turn(
@@ -494,6 +495,7 @@ def build_researcher(config: dict) -> Researcher | None:
             rate_limit_retries=int(config.get("agent", {}).get("rate_limit_retries", 4)),
             rate_limit_backoff_seconds=float(config.get("agent", {}).get("rate_limit_backoff_seconds", 2)),
             max_context_chars=int(role.get("max_context_chars", 60000)),
+            model_label=model_route_label(config, "researcher"),
         )
     except (ConfigError, ValueError):
         return None
@@ -528,6 +530,23 @@ def _build_llm_client(config: dict, role_name: str = "main"):
             project_root=project_root,
         )
     return OpenAICompatibleClient.from_provider_config(provider, model)
+
+
+def model_route_label(config: dict, role_name: str = "main") -> str:
+    roles = config.get("model", {}).get("roles", {})
+    role = roles.get(role_name) or {}
+    if not isinstance(role, dict):
+        return f"{role_name}/unknown"
+    provider_name = str(role.get("provider", "azure_openai"))
+    provider = config.get("model", {}).get("providers", {}).get(provider_name)
+    provider_config = dict(provider) if isinstance(provider, dict) else {}
+    runtime_root = config.get("_runtime_project_root")
+    project_root = Path(str(runtime_root)) if runtime_root else None
+    try:
+        model = _resolve_role_model(role, provider_config, project_root)
+    except ConfigError:
+        model = str(role.get("model") or provider_config.get("model") or "unknown")
+    return f"{provider_name}/{model}"
 
 
 def _resolve_role_model(role: dict, provider: dict, project_root: Path | None) -> str:

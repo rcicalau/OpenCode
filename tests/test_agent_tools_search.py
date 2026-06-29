@@ -636,9 +636,40 @@ def handle():
         agent.handle("/ask Read README", event_sink=seen.append)
 
         rendered = [(event.title, event.detail) for event in seen]
-        self.assertIn(("Think", "Grounding the answer in project context before responding."), rendered)
-        self.assertIn(("Think", "Reading README.md to inspect the requested context."), rendered)
-        self.assertTrue(any(title == "Observe" and "read_text succeeded" in detail for title, detail in rendered))
+        self.assertIn(("Thinking summary", "Grounding the answer in project context before responding."), rendered)
+        self.assertIn(("Thinking summary", "Reading README.md to inspect the requested context."), rendered)
+        self.assertTrue(any(title == "Observation" and "read_text succeeded" in detail for title, detail in rendered))
+        self.assertTrue(any(getattr(event, "model", "") == "main/fake" for event in seen if event.title == "Thinking summary"))
+
+    def test_model_route_events_identify_main_and_research_models(self) -> None:
+        class StubResearcher:
+            model_label = "researcher/qwen-3.6"
+
+            def __init__(self) -> None:
+                self.last_error = None
+
+            def research(self, _prompt, _context, _mode):
+                return None
+
+        seen = []
+        agent = CodeBuddyAgent(
+            self.root,
+            self.ledger,
+            FakeLLMClient(["Scoped answer."]),
+            self.edit,
+            self.command,
+            GitManager(self.root),
+            Searcher(self.policy),
+            ValidationHarness(self.root, self.command),
+            researcher=StubResearcher(),
+            main_model_label="main/gpt-5.4",
+        )
+
+        agent.handle("/scope inspect project", event_sink=seen.append)
+
+        routes = [(event.detail, getattr(event, "model", "")) for event in seen if event.title == "Model route"]
+        self.assertIn(("Using researcher/qwen-3.6 for read-only project research.", "researcher/qwen-3.6"), routes)
+        self.assertIn(("Using main/gpt-5.4 for main response generation.", "main/gpt-5.4"), routes)
 
     def test_model_request_after_tool_result_times_out_with_live_event(self) -> None:
         release_provider = threading.Event()

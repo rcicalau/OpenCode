@@ -60,7 +60,7 @@ def welcome_message(project_root: Path, session_id: str, provider: str, model: s
         "Code Buddy\n"
         f"Project: {project_root}\n"
         f"Session: {session_id}\n"
-        f"Model: {provider}/{model}\n"
+        f"Default model: {provider}/{model}\n"
         "Enter sends. Shift+Enter adds a line. Paste multiline text normally. Type /help or /skills."
     )
 
@@ -137,6 +137,7 @@ class ChatRenderer:
         detail = getattr(event, "detail", "")
         status = getattr(event, "status", "done")
         body = getattr(event, "body", "")
+        model = getattr(event, "model", "")
         style = {
             "context": "blue",
             "read": "cyan",
@@ -146,16 +147,21 @@ class ChatRenderer:
             "validate": "green" if status == "done" else "red",
             "git": "magenta",
             "model": "magenta",
+            "model_route": "magenta",
             "thought": "bright_magenta",
         }.get(kind, "white")
+        display_title = title
+        if model and title in {"Thinking summary", "Observation", "Model route"}:
+            display_title = f"{title} [{model}]"
+        prefix_text = _event_prefix(display_title)
         if self.console:
-            prefix = self.text(f"{title:<8}", style=f"bold {style}")
+            prefix = self.text(prefix_text, style=f"bold {style}")
             body_style = "red" if status == "failed" else "dim"
             self.console.print(prefix + self.text(str(detail), style=body_style))
             if body:
                 self.console.print(str(body), style="dim")
         else:
-            print(f"{title:<8}{detail}")
+            print(f"{prefix_text}{detail}")
             if body:
                 print(str(body))
 
@@ -286,3 +292,7 @@ def build_prompt_key_bindings():
         event.current_buffer.insert_text("\n")
 
     return bindings
+
+
+def _event_prefix(title: str) -> str:
+    return f"{title:<10}" if len(title) < 10 else f"{title}  "

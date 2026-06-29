@@ -189,6 +189,7 @@ class CodeBuddyAgent:
         model_timeout_grace_seconds: float = 30,
         rate_limit_retries: int = 4,
         rate_limit_backoff_seconds: float = 2,
+        main_model_label: str | None = None,
     ) -> None:
         self.project_root = project_root
         self.ledger = ledger
@@ -224,6 +225,7 @@ class CodeBuddyAgent:
             raise ValueError("rate_limit_backoff_seconds must be non-negative")
         self.rate_limit_retries = rate_limit_retries
         self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
+        self.main_model_label = main_model_label or _model_label_from_client(self.llm, "main")
         self._current_changed_files: list[str] = []
         self.tool_runtime = ToolRuntime(
             self.project_root,
@@ -324,6 +326,8 @@ class CodeBuddyAgent:
         repeated_count = 0
         while self.max_tool_iterations is None or iteration < self.max_tool_iterations:
             if self._has_live_event_sink(events):
+                if iteration == 0:
+                    self._emit_model_route(events, self.main_model_label, "main response generation")
                 label = f"request {iteration + 1}"
                 if self.max_tool_iterations is not None:
                     label = f"{label}/{self.max_tool_iterations}"
@@ -440,11 +444,23 @@ class CodeBuddyAgent:
 
     def _emit_visible_thought(self, events: list[AgentEvent], detail: str) -> None:
         if self._has_live_event_sink(events) and detail:
-            events.append(AgentEvent("thought", "Think", detail))
+            events.append(AgentEvent("thought", "Thinking summary", detail, model=self.main_model_label, role="main"))
 
     def _emit_visible_observation(self, events: list[AgentEvent], detail: str) -> None:
         if self._has_live_event_sink(events) and detail:
-            events.append(AgentEvent("thought", "Observe", detail))
+            events.append(AgentEvent("thought", "Observation", detail, model=self.main_model_label, role="main"))
+
+    def _emit_model_route(self, events: list[AgentEvent], model_label: str, purpose: str, role: str | None = None) -> None:
+        if self._has_live_event_sink(events):
+            events.append(
+                AgentEvent(
+                    "model_route",
+                    "Model route",
+                    f"Using {model_label} for {purpose}.",
+                    model=model_label,
+                    role=role or model_label.split("/", 1)[0],
+                )
+            )
 
     def _handle_work_plan(self, manager: WorkPlanManager, plan: WorkPlan, project_context: str, events: list[AgentEvent]) -> AgentResult:
         messages: list[str] = []
@@ -562,6 +578,8 @@ class CodeBuddyAgent:
     def _context_with_research(self, prompt: str, mode: str, project_context: str, events: list[AgentEvent]) -> str:
         if not self.researcher:
             return project_context
+        researcher_label = getattr(self.researcher, "model_label", _model_label_from_client(getattr(self.researcher, "llm", None), "researcher"))
+        self._emit_model_route(events, researcher_label, "read-only project research", "researcher")
         brief = self.researcher.research(prompt, project_context, mode)
         if not brief:
             if getattr(self.researcher, "last_error", None):
@@ -949,6 +967,17 @@ def _single_tool_result_visible_observation(result: ToolResult) -> str:
 
 def _display_tool_name(name: str) -> str:
     return name.removeprefix("git_").replace("_", " ")
+
+
+def _model_label_from_client(client, role: str) -> str:
+    if client is None:
+        return f"{role}/unknown"
+    model = getattr(client, "model", None)
+    if model:
+        return f"{role}/{model}"
+    if client.__class__.__name__ == "FakeLLMClient":
+        return f"{role}/fake"
+    return f"{role}/{client.__class__.__name__}"
 
 
 def _validation_event_count(events: list[AgentEvent]) -> int:
