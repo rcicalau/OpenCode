@@ -9,10 +9,11 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codebuddy.agent import CodeBuddyAgent, route_intent
+from codebuddy.agent import AgentResult, CodeBuddyAgent, route_intent
 from codebuddy.auth import auth_check, auth_set, auth_status
 from codebuddy.cli import build_brokers, main, maybe_prompt_resume, prompt_project_root
 from codebuddy.command_broker import CommandBroker, CommandResult, Risk
@@ -27,6 +28,7 @@ from codebuddy.project_scaffold import ensure_buddy_scaffold
 from codebuddy.project_session import ProjectSession
 from codebuddy.session import SessionManager
 from codebuddy.slash import SlashCommandHandler
+from codebuddy.workplan import WorkPlanManager
 
 
 def init_empty_repo(root: Path) -> None:
@@ -94,8 +96,8 @@ class CliLlmAgentGitTests(unittest.TestCase):
             def isatty(self):
                 return True
 
-        def fake_chat_loop(root, ledger, config, journal, startup_context):
-            called.append((root, ledger.session_id, startup_context))
+        def fake_chat_loop(root, ledger, config, journal, startup_context, startup_prompt=None):
+            called.append((root, ledger.session_id, startup_context, startup_prompt))
             return 0
 
         sys.stdin = TtyStdin()
@@ -111,7 +113,47 @@ class CliLlmAgentGitTests(unittest.TestCase):
             cli_module.chat_loop = original_chat_loop
 
         self.assertEqual(called[0][0], self.root.resolve())
+        self.assertIsNone(called[0][3])
         self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
+
+    def test_chat_startup_yes_passes_resume_prompt_to_chat_loop(self) -> None:
+        import codebuddy.cli as cli_module
+
+        session = ProjectSession.open(self.root)
+        session.ledger.objective = "finish pending docs"
+        session.ledger.pending_next_step = "document src/app.py"
+        session.manager.save(session.ledger)
+        original_stdin = sys.stdin
+        original_configure = cli_module.maybe_configure_project_provider
+        original_prompt_auth = cli_module.maybe_prompt_for_auth
+        original_chat_loop = cli_module.chat_loop
+        called = []
+
+        class TtyStdin:
+            def isatty(self):
+                return True
+
+            def readline(self):
+                return "y\n"
+
+        def fake_chat_loop(root, ledger, config, journal, startup_context, startup_prompt=None):
+            called.append((ledger.session_id, startup_prompt))
+            return 0
+
+        sys.stdin = TtyStdin()
+        cli_module.maybe_configure_project_provider = lambda _root, _config: None
+        cli_module.maybe_prompt_for_auth = lambda _config: None
+        cli_module.chat_loop = fake_chat_loop
+        try:
+            with redirect_stdout(StringIO()):
+                self.assertEqual(main(["chat"]), 0)
+        finally:
+            sys.stdin = original_stdin
+            cli_module.maybe_configure_project_provider = original_configure
+            cli_module.maybe_prompt_for_auth = original_prompt_auth
+            cli_module.chat_loop = original_chat_loop
+
+        self.assertEqual(called, [(session.ledger.session_id, "finish pending docs")])
 
     def test_ctrl_c_exits_cleanly_without_traceback(self) -> None:
         import codebuddy.cli as cli_module
@@ -803,16 +845,91 @@ model = "sonar-pro"
         first.manager.save(first.ledger)
         prompts: list[str] = []
 
-        second = maybe_prompt_resume(
+        decision = maybe_prompt_resume(
             self.root,
             first,
             input_func=lambda: "n",
             output_func=prompts.append,
         )
 
+        second = decision.session
         self.assertNotEqual(second.ledger.session_id, first.ledger.session_id)
         self.assertIsNone(second.ledger.objective)
+        self.assertIsNone(decision.followup_prompt)
         self.assertTrue(any("finish pending docs" in line for line in prompts))
+
+    def test_resume_prompt_yes_schedules_saved_objective(self) -> None:
+        first = ProjectSession.open(self.root)
+        first.ledger.objective = "finish pending docs"
+        first.ledger.pending_next_step = "document src/app.py"
+        first.manager.save(first.ledger)
+
+        decision = maybe_prompt_resume(
+            self.root,
+            first,
+            input_func=lambda: "y",
+            output_func=lambda _line: None,
+        )
+
+        self.assertEqual(decision.session.ledger.session_id, first.ledger.session_id)
+        self.assertEqual(decision.followup_prompt, "finish pending docs")
+
+    def test_resume_prompt_yes_schedules_continue_for_active_workplan(self) -> None:
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        first = ProjectSession.open(self.root)
+        first.ledger.objective = "Document each file in the codebase"
+        first.ledger.pending_next_step = "document_file a.py"
+        first.manager.save(first.ledger)
+        workplans = WorkPlanManager(self.root, first.ledger.session_id, PathPolicy(self.root))
+        self.assertIsNotNone(workplans.active_or_new(first.ledger.objective))
+
+        decision = maybe_prompt_resume(
+            self.root,
+            first,
+            input_func=lambda: "",
+            output_func=lambda _line: None,
+        )
+
+        self.assertEqual(decision.followup_prompt, "continue")
+
+    def test_chat_loop_runs_startup_resume_before_reading_prompt(self) -> None:
+        import codebuddy.cli as cli_module
+
+        manager = SessionManager(self.root)
+        ledger = manager.load_or_create()
+        journal = Journal(manager.session_dir(ledger.session_id) / "journal.jsonl")
+        config = {
+            "commands": {},
+            "model": {"roles": {"main": {"provider": "fake", "model": "fake-model"}}},
+            "git": {},
+            "workspace": {},
+            "validation": {"commands": []},
+            "agent": {},
+            "tools": {},
+        }
+        prompts: list[str] = []
+        original_run_prompt = cli_module.run_prompt
+        original_read_prompt = cli_module.read_prompt
+
+        def fake_run_prompt(root, ledger, config, journal, prompt, yolo_enabled=False, event_sink=None):
+            prompts.append(prompt)
+            return AgentResult("execute", "continued", [], [])
+
+        def fake_read_prompt():
+            if not prompts:
+                raise AssertionError("chat loop read input before running startup continuation")
+            return SimpleNamespace(text="", exit_requested=True)
+
+        cli_module.run_prompt = fake_run_prompt
+        cli_module.read_prompt = fake_read_prompt
+        try:
+            with redirect_stdout(StringIO()):
+                self.assertEqual(cli_module.chat_loop(self.root, ledger, config, journal, startup_prompt="continue"), 0)
+        finally:
+            cli_module.run_prompt = original_run_prompt
+            cli_module.read_prompt = original_read_prompt
+
+        self.assertEqual(prompts, ["continue"])
 
     def test_cli_prompt_missing_provider_credentials_fails_cleanly(self) -> None:
         config = self.root / ".buddy" / "config.toml"

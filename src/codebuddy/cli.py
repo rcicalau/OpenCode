@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import copy
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import __version__
@@ -34,6 +35,12 @@ from .session import SessionManager
 from .slash import SlashCommandHandler, _workplan_payload
 from .validation import ValidationHarness
 from .workplan import WorkPlanManager
+
+
+@dataclass(slots=True)
+class ResumeDecision:
+    session: ProjectSession
+    followup_prompt: str | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,8 +102,11 @@ def _main(argv: list[str] | None = None) -> int:
         config = load_result.config
         maybe_prompt_for_auth(config)
     project_session = ProjectSession.open(root, new=new_session)
+    startup_followup_prompt = None
     if command == "chat" and sys.stdin.isatty() and not new_session:
-        project_session = maybe_prompt_resume(root, project_session)
+        resume_decision = maybe_prompt_resume(root, project_session)
+        project_session = resume_decision.session
+        startup_followup_prompt = resume_decision.followup_prompt
     manager = project_session.manager
     ledger = project_session.ledger
     session_dir = manager.session_dir(ledger.session_id)
@@ -164,7 +174,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
     if command == "chat":
         startup_context = bootstrap_memory(root, ledger, config, journal)
-        return chat_loop(root, ledger, config, journal, startup_context)
+        return chat_loop(root, ledger, config, journal, startup_context, startup_followup_prompt)
 
     prompt = " ".join(prompt_args).strip()
     if prompt:
@@ -233,10 +243,10 @@ def prompt_project_root(default_root: Path, picker=None) -> Path:
     return selected
 
 
-def maybe_prompt_resume(root: Path, project_session: ProjectSession, input_func=input, output_func=print) -> ProjectSession:
+def maybe_prompt_resume(root: Path, project_session: ProjectSession, input_func=input, output_func=print) -> ResumeDecision:
     ledger = project_session.ledger
     if not _has_resumable_work(ledger):
-        return project_session
+        return ResumeDecision(project_session)
     output_func("")
     output_func("Previous Code Buddy work is still active in this project.")
     output_func(f"Objective: {ledger.objective or 'none'}")
@@ -251,8 +261,21 @@ def maybe_prompt_resume(root: Path, project_session: ProjectSession, input_func=
     answer = input_func().strip().lower()
     if answer in {"n", "no", "new", "fresh", "start fresh", "clear"}:
         WorkPlanManager(root, ledger.session_id, build_path_policy(root, load_config(root).config)).clear_current()
-        return ProjectSession.open(root, new=True)
-    return project_session
+        return ResumeDecision(ProjectSession.open(root, new=True))
+    return ResumeDecision(project_session, _resume_followup_prompt(root, ledger))
+
+
+def _resume_followup_prompt(root: Path, ledger) -> str | None:
+    if ledger.pending_next_step in {"approve command before execution", "approve dirty branch before execution"}:
+        return "y"
+    plan = WorkPlanManager(root, ledger.session_id, PathPolicy(root)).load_current()
+    if plan and (plan.pending_items() or plan.blocked_items()):
+        return "continue"
+    if ledger.objective:
+        return ledger.objective
+    if ledger.pending_next_step:
+        return "continue"
+    return None
 
 
 def _has_resumable_work(ledger) -> bool:
@@ -389,7 +412,14 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
     return result
 
 
-def chat_loop(root: Path, ledger, config: dict, journal: Journal, startup_context: ProjectContext | None = None) -> int:
+def chat_loop(
+    root: Path,
+    ledger,
+    config: dict,
+    journal: Journal,
+    startup_context: ProjectContext | None = None,
+    startup_prompt: str | None = None,
+) -> int:
     manager = SessionManager(root)
     yolo_state = {"enabled": bool(config.get("commands", {}).get("yolo", False))}
     slash = build_slash_handler(root, ledger, manager, journal, config, yolo_state)
@@ -404,12 +434,19 @@ def chat_loop(root: Path, ledger, config: dict, journal: Journal, startup_contex
                 f"mapped {startup_context.files_count} files, {len(startup_context.key_files)} key files, {startup_context.symbols_count} symbols",
             )
         )
+    queued_prompt = startup_prompt
+    if queued_prompt:
+        renderer.event(AgentEvent("resume", "Resume", "continuing previous work"))
     while True:
-        prompt_result = read_prompt()
-        if prompt_result.exit_requested:
-            manager.save(ledger)
-            return 0
-        prompt = prompt_result.text
+        if queued_prompt:
+            prompt = queued_prompt
+            queued_prompt = None
+        else:
+            prompt_result = read_prompt()
+            if prompt_result.exit_requested:
+                manager.save(ledger)
+                return 0
+            prompt = prompt_result.text
         if not prompt:
             continue
         slash_result = slash.handle(prompt)
