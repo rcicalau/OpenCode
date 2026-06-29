@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -42,6 +43,9 @@ class AzureAuthOpenAIClient:
             raise ValueError("auth_refresh_retries must be a non-negative integer")
         self.auth_refresh_retries = auth_refresh_retries
         self._auth_client = None
+        self._token_value: str | None = None
+        self._token_generation = 0
+        self._auth_lock = threading.RLock()
 
     @classmethod
     def from_provider_config(
@@ -76,14 +80,15 @@ class AzureAuthOpenAIClient:
         attempts = self.auth_refresh_retries + 1
         last_auth_error: Exception | None = None
         for attempt in range(attempts):
+            token, generation = self._token_snapshot()
             try:
-                response = self._complete_once(messages, tools)
+                response = self._complete_once(messages, tools, token)
                 break
             except Exception as exc:
                 if not _is_unauthorized_error(exc) or attempt >= attempts - 1:
                     raise
                 last_auth_error = exc
-                self._auth_client = None
+                self._refresh_token_after_unauthorized(generation)
         else:
             raise last_auth_error or RuntimeError("Azure auth refresh failed")
 
@@ -97,7 +102,7 @@ class AzureAuthOpenAIClient:
             tool_calls=parse_native_tool_calls(message_dict, tolerate_malformed=True),
         )
 
-    def _complete_once(self, messages: list[Message], tools: list[dict[str, Any]] | None = None):
+    def _complete_once(self, messages: list[Message], tools: list[dict[str, Any]] | None = None, token: str | None = None):
         http_client = None
         client = None
         try:
@@ -105,7 +110,7 @@ class AzureAuthOpenAIClient:
             import httpx
 
             http_client = httpx.Client(verify=self.verify_ssl, timeout=self.timeout_seconds)
-            client = OpenAI(base_url=self.base_url, api_key=self._token(), http_client=http_client)
+            client = OpenAI(base_url=self.base_url, api_key=token or self._token_snapshot()[0], http_client=http_client)
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": msg.role, "content": msg.content} for msg in messages],
@@ -119,7 +124,23 @@ class AzureAuthOpenAIClient:
                 http_client.close()
         return response
 
-    def _token(self) -> str:
+    def _token_snapshot(self) -> tuple[str, int]:
+        with self._auth_lock:
+            if self._token_value is None:
+                self._load_token_locked(force_new_client=False)
+            return self._token_value or "", self._token_generation
+
+    def _refresh_token_after_unauthorized(self, failed_generation: int) -> tuple[str, int]:
+        with self._auth_lock:
+            if self._token_value is not None and self._token_generation != failed_generation:
+                return self._token_value, self._token_generation
+            self._token_value = None
+            self._load_token_locked(force_new_client=True)
+            return self._token_value or "", self._token_generation
+
+    def _load_token_locked(self, *, force_new_client: bool) -> None:
+        if force_new_client:
+            self._auth_client = None
         token = load_auth_token(
             auth_client_path=self.auth_client_path,
             token_method=self.token_method,
@@ -127,7 +148,8 @@ class AzureAuthOpenAIClient:
             existing_client=self._auth_client,
         )
         self._auth_client = token.client
-        return token.value
+        self._token_value = token.value
+        self._token_generation += 1
 
 
 class AuthToken:

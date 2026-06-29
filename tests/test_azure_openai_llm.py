@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -10,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.auth import auth_check
 import codebuddy.azure_openai_llm as azure_module
-from codebuddy.azure_openai_llm import AzureAuthOpenAIClient, load_auth_token, load_import_value
+from codebuddy.azure_openai_llm import AuthToken, AzureAuthOpenAIClient, load_auth_token, load_import_value
 from codebuddy.errors import ConfigError
 from codebuddy.llm import Message
 
@@ -26,9 +28,11 @@ class AzureOpenAILlmTests(unittest.TestCase):
             name: sys.modules.get(name)
             for name in ("auth", "ai_mart", "azure_auth", "broker", "broker.ai_mart", "openai", "httpx")
         }
+        self.old_load_auth_token = azure_module.load_auth_token
 
     def tearDown(self) -> None:
         azure_module.__file__ = self.old_module_file
+        azure_module.load_auth_token = self.old_load_auth_token
         for name, module in self.old_modules.items():
             if module is None:
                 sys.modules.pop(name, None)
@@ -209,6 +213,118 @@ class AzureOpenAILlmTests(unittest.TestCase):
         self.assertEqual([item.api_key for item in self.created_clients], ["expired-token", "fresh-token"])
         self.assertTrue(all(item.closed for item in self.created_clients))
         self.assertTrue(all(item.closed for item in self.created_http_clients))
+
+    def test_adapter_reuses_cached_token_across_successive_requests(self) -> None:
+        self.install_fake_openai_sdk()
+        calls: list[int] = []
+
+        def fake_load_auth_token(**_kwargs):
+            calls.append(len(calls) + 1)
+            return AuthToken("cached-token", object())
+
+        azure_module.load_auth_token = fake_load_auth_token
+        client = AzureAuthOpenAIClient(
+            base_url="https://aimark.example/openai/v1",
+            model="openai/gpt-5.4",
+            auth_client="auth:AzureAuthClient",
+            project_root=self.root,
+        )
+
+        first = client.complete([Message("user", "hello")])
+        second = client.complete([Message("user", "again")])
+
+        self.assertEqual(first.content, "done")
+        self.assertEqual(second.content, "done")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([item.api_key for item in self.created_clients], ["cached-token", "cached-token"])
+
+    def test_concurrent_unauthorized_refresh_is_single_flight(self) -> None:
+        created_clients = self.created_clients
+        created_http_clients = self.created_http_clients
+
+        class FakeHttpClient:
+            def __init__(self, *, verify=True, timeout=None):
+                self.closed = False
+                created_http_clients.append(self)
+
+            def close(self):
+                self.closed = True
+
+        class FakeUnauthorized(Exception):
+            status_code = 401
+
+        class FakeMessage:
+            content = "done after shared refresh"
+
+            def model_dump(self):
+                return {"content": "done after shared refresh", "tool_calls": []}
+
+        class FakeResponse:
+            choices = [types.SimpleNamespace(message=FakeMessage())]
+
+            def model_dump(self):
+                return {"choices": [{"message": {"content": "done after shared refresh"}}]}
+
+        class FakeOpenAI:
+            def __init__(self, *, base_url, api_key, http_client):
+                self.api_key = api_key
+                self.http_client = http_client
+                created_clients.append(self)
+                self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=self.create))
+
+            def create(self, **_kwargs):
+                if self.api_key == "expired-token":
+                    raise FakeUnauthorized("401 token expired")
+                return FakeResponse()
+
+            def close(self):
+                self.http_client.close()
+
+        openai_module = types.ModuleType("openai")
+        openai_module.OpenAI = FakeOpenAI
+        httpx_module = types.ModuleType("httpx")
+        httpx_module.Client = FakeHttpClient
+        sys.modules["openai"] = openai_module
+        sys.modules["httpx"] = httpx_module
+
+        load_calls: list[str] = []
+        load_lock = threading.Lock()
+
+        def fake_load_auth_token(**_kwargs):
+            with load_lock:
+                token = "expired-token" if not load_calls else "fresh-token"
+                load_calls.append(token)
+            time.sleep(0.02)
+            return AuthToken(token, object())
+
+        azure_module.load_auth_token = fake_load_auth_token
+        client = AzureAuthOpenAIClient(
+            base_url="https://aimark.example/openai/v1",
+            model="openai/gpt-5.4",
+            auth_client="auth:AzureAuthClient",
+            project_root=self.root,
+            auth_refresh_retries=1,
+        )
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def run_request() -> None:
+            try:
+                results.append(client.complete([Message("user", "hello")]).content)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run_request) for _ in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(results, ["done after shared refresh"] * 10)
+        self.assertEqual(load_calls, ["expired-token", "fresh-token"])
+        self.assertGreaterEqual([item.api_key for item in self.created_clients].count("expired-token"), 1)
+        self.assertGreaterEqual([item.api_key for item in self.created_clients].count("fresh-token"), 10)
 
     def test_adapter_stops_after_configured_auth_refresh_retries(self) -> None:
         created_clients = self.created_clients
