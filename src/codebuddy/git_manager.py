@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from .command_broker import CommandBroker
 from .errors import ConfirmationRequired
+from .hashutil import sha256_bytes
 
 
 @dataclass(slots=True)
@@ -74,7 +75,8 @@ class GitManager:
         if branch and branch.startswith(self.branch_prefix):
             self._record_state(agent_branch=branch)
             return branch
-        if _user_dirty_porcelain(status.porcelain).strip() and not approve_protected:
+        dirty_baseline = self._dirty_baseline(status.porcelain)
+        if dirty_baseline and not approve_protected:
             raise ConfirmationRequired("dirty worktree requires explicit approval before creating an agent branch")
         if self.agent_branch_required or branch in self.protected_branches or branch is None:
             new_branch = self.make_branch_name(objective)
@@ -85,8 +87,11 @@ class GitManager:
                 starting_commit=starting_commit,
                 agent_branch=new_branch,
                 base_commit=starting_commit,
+                dirty_baseline=dirty_baseline,
             )
             return new_branch
+        if dirty_baseline:
+            self._record_state(dirty_baseline=dirty_baseline)
         return branch
 
     def make_branch_name(self, objective: str) -> str:
@@ -257,6 +262,13 @@ class GitManager:
             return _default_state(self.project_root)
         return _merge_state_defaults(data, self.project_root)
 
+    def dirty_baseline(self) -> dict[str, str]:
+        state = self.session_state()
+        baseline = state.get("dirty_baseline")
+        if not isinstance(baseline, dict):
+            return {}
+        return {str(path).replace("\\", "/"): str(signature) for path, signature in baseline.items()}
+
     def _run(self, args: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         completed, timed_out, _duration = self._run_git_process(args)
         if check and (timed_out or completed.returncode != 0):
@@ -349,6 +361,12 @@ class GitManager:
     def _has_project_git_metadata(self) -> bool:
         return (self.project_root / ".git").exists()
 
+    def _dirty_baseline(self, porcelain: str) -> dict[str, str]:
+        return {
+            path: _file_signature(self.project_root, path)
+            for path in _dirty_paths_from_porcelain(porcelain)
+        }
+
     def _state_path(self) -> Path:
         return self.project_root / ".buddy" / "git" / "state.json"
 
@@ -395,6 +413,7 @@ def _default_state(project_root: Path) -> dict:
         "starting_commit": None,
         "agent_branch": None,
         "base_commit": None,
+        "dirty_baseline": {},
         "checkpoints": [],
         "pushes": [],
     }
@@ -408,6 +427,8 @@ def _merge_state_defaults(data: dict, project_root: Path) -> dict:
         merged["checkpoints"] = []
     if not isinstance(merged.get("pushes"), list):
         merged["pushes"] = []
+    if not isinstance(merged.get("dirty_baseline"), dict):
+        merged["dirty_baseline"] = {}
     return merged
 
 
@@ -467,9 +488,36 @@ def _remote_provider(host: str) -> str:
 def _user_dirty_porcelain(porcelain: str) -> str:
     lines: list[str] = []
     for line in porcelain.splitlines():
-        path = line[3:] if len(line) >= 4 else line
-        normalized = path.replace("\\", "/")
+        normalized = _dirty_path_from_porcelain_line(line)
         if normalized == ".buddy" or normalized.startswith(".buddy/"):
             continue
         lines.append(line)
     return "\n".join(lines)
+
+
+def _dirty_paths_from_porcelain(porcelain: str) -> list[str]:
+    paths: list[str] = []
+    for line in _user_dirty_porcelain(porcelain).splitlines():
+        path = _dirty_path_from_porcelain_line(line)
+        if path:
+            paths.append(path)
+    return list(dict.fromkeys(paths))
+
+
+def _dirty_path_from_porcelain_line(line: str) -> str:
+    path = line[3:] if len(line) >= 4 else line
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path.strip().replace("\\", "/")
+
+
+def _file_signature(project_root: Path, rel_path: str) -> str:
+    path = project_root / rel_path
+    try:
+        if path.is_file():
+            return sha256_bytes(path.read_bytes())
+        if path.exists():
+            return "<non-file>"
+    except OSError:
+        return "<unreadable>"
+    return "<missing>"

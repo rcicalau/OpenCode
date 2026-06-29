@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .command_broker import CommandBroker, CommandResult
 from .errors import ConfirmationRequired
+from .hashutil import sha256_bytes
 
 
 @dataclass(slots=True)
@@ -29,7 +32,12 @@ class ValidationHarness:
         self.command_broker = command_broker
         self.commands = commands or []
 
-    def validate(self, touched_files: list[Path] | None = None, expected_files: list[Path] | None = None) -> ValidationResult:
+    def validate(
+        self,
+        touched_files: list[Path] | None = None,
+        expected_files: list[Path] | None = None,
+        allowed_existing_changes: dict[str, str] | None = None,
+    ) -> ValidationResult:
         result = ValidationResult(passed=True)
         result.tiers.append("syntax")
         for path in touched_files or []:
@@ -43,7 +51,7 @@ class ValidationHarness:
                     result.failures.append(f"python syntax failed: {path}: {exc}")
         if expected_files is not None:
             result.tiers.append("worktree")
-            unexpected = self._unexpected_changed_files(expected_files)
+            unexpected = self._unexpected_changed_files(expected_files, allowed_existing_changes or {})
             if unexpected:
                 result.passed = False
                 result.failure_code = "unexpected_worktree_changes"
@@ -76,7 +84,7 @@ class ValidationHarness:
                 result.failures.append(f"command failed ({command_result.exit_code}): {command}")
         return result
 
-    def _unexpected_changed_files(self, expected_files: list[Path]) -> list[str]:
+    def _unexpected_changed_files(self, expected_files: list[Path], allowed_existing_changes: dict[str, str] | None = None) -> list[str]:
         if not (self.project_root / ".git").exists():
             return []
         try:
@@ -95,6 +103,10 @@ class ValidationHarness:
         if completed.returncode != 0:
             return []
         expected = {self._relative(path) for path in expected_files}
+        allowed_existing_changes = {
+            str(path).replace("\\", "/"): str(signature)
+            for path, signature in (allowed_existing_changes or {}).items()
+        }
         changed: set[str] = set()
         for line in completed.stdout.splitlines():
             if len(line) < 4:
@@ -104,6 +116,8 @@ class ValidationHarness:
                 rel = rel.split(" -> ", 1)[1].strip()
             rel = rel.replace("\\", "/")
             if rel.startswith((".git/", ".buddy/")):
+                continue
+            if rel in allowed_existing_changes and _file_signature(self.project_root, rel) == allowed_existing_changes[rel]:
                 continue
             changed.add(rel)
         return sorted(path for path in changed if path not in expected)
@@ -134,3 +148,35 @@ class ValidationHarness:
             return resolved.relative_to(self.project_root).as_posix()
         except ValueError:
             return resolved.as_posix()
+
+
+def validate_with_worktree_context(
+    validation: Any,
+    touched_files: list[Path],
+    *,
+    expected_files: list[Path],
+    allowed_existing_changes: dict[str, str] | None = None,
+) -> ValidationResult:
+    try:
+        parameters = inspect.signature(validation.validate).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "allowed_existing_changes" in parameters:
+        return validation.validate(
+            touched_files,
+            expected_files=expected_files,
+            allowed_existing_changes=allowed_existing_changes or {},
+        )
+    return validation.validate(touched_files, expected_files=expected_files)
+
+
+def _file_signature(project_root: Path, rel_path: str) -> str:
+    path = project_root / rel_path
+    try:
+        if path.is_file():
+            return sha256_bytes(path.read_bytes())
+        if path.exists():
+            return "<non-file>"
+    except OSError:
+        return "<unreadable>"
+    return "<missing>"

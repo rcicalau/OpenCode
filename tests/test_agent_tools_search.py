@@ -796,6 +796,56 @@ def handle():
         self.assertIn("Approved branch created", result.message)
         self.assertFalse(self.ledger.approvals.get("dirty_branch", False))
 
+    def test_workplan_allows_approved_preexisting_dirty_user_files(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        (self.root / "README.md").write_text("user baseline\n", encoding="utf-8")
+        (self.root / "agent.py").write_text("def handle():\n    return 'ok'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md", "agent.py"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (self.root / "README.md").write_text("user dirty work\n", encoding="utf-8")
+        self.ledger.approvals["dirty_branch"] = True
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"read_text","arguments":{"path":"agent.py"}}</tool_call>',
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"agent.py","old":"def handle():\\n    return \'ok\'\\n","new":"def handle():\\n    \\"\\"\\"Return ok.\\"\\"\\"\\n    return \'ok\'\\n"}}</tool_call>',
+                "Documented agent.py.",
+            ]
+        )
+
+        result = agent.handle("Add Google style documentation to agent.py")
+
+        self.assertIn("Work plan complete", result.message)
+        self.assertNotIn("Work plan blocked", result.message)
+        self.assertEqual(self.ledger.validation_state["passed"], True)
+        self.assertEqual((self.root / "README.md").read_text(encoding="utf-8"), "user dirty work\n")
+
+    def test_workplan_allows_previous_buddy_dirty_files_between_slices(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+        (self.root / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.py", "b.py"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "switch", "-c", "codebuddy/existing-work"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (self.root / "a.py").write_text('def a():\n    """Return one."""\n    return 1\n', encoding="utf-8")
+        self.ledger.files_edited.append("a.py")
+        agent = self.make_agent(
+            [
+                '<tool_call>{"name":"read_text","arguments":{"path":"b.py"}}</tool_call>',
+                '<tool_call>{"name":"edit_exact_replace","arguments":{"path":"b.py","old":"def b():\\n    return 2\\n","new":"def b():\\n    \\"\\"\\"Return two.\\"\\"\\"\\n    return 2\\n"}}</tool_call>',
+                "Documented b.py.",
+            ]
+        )
+
+        result = agent.handle("Add Google style documentation to b.py")
+
+        self.assertIn("Work plan complete", result.message)
+        self.assertNotIn("Work plan blocked", result.message)
+        self.assertEqual(self.ledger.validation_state["passed"], True)
+
     def test_document_codebase_workplan_processes_one_file_and_persists_remaining(self) -> None:
         (self.root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
         (self.root / "b.py").write_text("def b():\n    return 2\n", encoding="utf-8")

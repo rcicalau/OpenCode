@@ -65,7 +65,7 @@ from .tool_calls import (
 )
 from .tool_result import ToolResult
 from .tool_runtime import ToolRuntime
-from .validation import ValidationHarness
+from .validation import ValidationHarness, validate_with_worktree_context
 from .workplan import WorkItem, WorkPlan, WorkPlanManager
 from .errors import CodeBuddyError, ConfirmationRequired
 
@@ -611,7 +611,13 @@ class CodeBuddyAgent:
         if not touched_rel_paths:
             return True
         touched = [self.project_root / path for path in touched_rel_paths]
-        validation = self.validation.validate(touched, expected_files=touched)
+        expected = [self.project_root / path for path in self._expected_worktree_rel_paths(touched_rel_paths)]
+        validation = validate_with_worktree_context(
+            self.validation,
+            touched,
+            expected_files=expected,
+            allowed_existing_changes=self.git_manager.dirty_baseline(),
+        )
         self.ledger.validation_state = {
             "passed": validation.passed,
             "failures": validation.failures,
@@ -625,6 +631,14 @@ class CodeBuddyAgent:
         detail = "passed" if validation.passed else f"failed ({len(validation.failures)} failures)"
         events.append(AgentEvent("validate", "Validate", detail, "done" if validation.passed else "failed"))
         return validation.passed
+
+    def _expected_worktree_rel_paths(self, touched_rel_paths: list[str]) -> list[str]:
+        allowed = [
+            *self.ledger.files_edited,
+            *self._current_changed_files,
+            *touched_rel_paths,
+        ]
+        return list(dict.fromkeys(str(path).replace("\\", "/") for path in allowed if path))
 
     def _auto_validate_after_edits(self, events: list[AgentEvent], already_validated: bool = False) -> bool | None:
         if already_validated or not self._current_changed_files:

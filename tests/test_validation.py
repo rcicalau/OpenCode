@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codebuddy.command_broker import CommandBroker, CommandPolicy
 from codebuddy.errors import ConfirmationRequired, DeniedByPolicy
+from codebuddy.hashutil import sha256_bytes
 from codebuddy.validation import ValidationHarness
 
 
@@ -69,6 +70,36 @@ class ValidationHarnessTests(unittest.TestCase):
         self.assertEqual(result.failure_code, "unexpected_worktree_changes")
         self.assertIn("git_status", result.recovery_actions)
         self.assertIn("unexpected.py", result.worktree_report)
+
+    def test_validation_allows_unchanged_baseline_dirty_file_but_detects_new_changes(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.root, check=True)
+        expected = self.root / "expected.py"
+        user_file = self.root / "user.py"
+        expected.write_text("value = 1\n", encoding="utf-8")
+        user_file.write_text("user = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        user_file.write_text("user = 2\n", encoding="utf-8")
+        baseline = {"user.py": sha256_bytes(user_file.read_bytes())}
+        expected.write_text("value = 2\n", encoding="utf-8")
+
+        clean_baseline = ValidationHarness(self.root, self.broker).validate(
+            [expected],
+            expected_files=[expected],
+            allowed_existing_changes=baseline,
+        )
+        user_file.write_text("user = 3\n", encoding="utf-8")
+        changed_baseline = ValidationHarness(self.root, self.broker).validate(
+            [expected],
+            expected_files=[expected],
+            allowed_existing_changes=baseline,
+        )
+
+        self.assertTrue(clean_baseline.passed)
+        self.assertFalse(changed_baseline.passed)
+        self.assertEqual(changed_baseline.unexpected_files, ["user.py"])
 
 
 if __name__ == "__main__":

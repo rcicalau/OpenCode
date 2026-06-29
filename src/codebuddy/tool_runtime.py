@@ -16,7 +16,7 @@ from .session import SessionLedger
 from .textfile import is_probably_binary_file
 from .tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall
 from .tool_result import ToolResult
-from .validation import ValidationHarness
+from .validation import ValidationHarness, validate_with_worktree_context
 
 
 class ToolRuntime:
@@ -370,7 +370,14 @@ class ToolRuntime:
             return ToolResult("validate", False, "validate failed: validation harness unavailable", error_type="tool_unavailable")
         try:
             touched = self._validation_targets()
-            validation = self.validation.validate(touched, expected_files=touched)
+            expected = self._expected_validation_targets(touched)
+            allowed_existing = self.git_manager.dirty_baseline() if self.git_manager else {}
+            validation = validate_with_worktree_context(
+                self.validation,
+                touched,
+                expected_files=expected,
+                allowed_existing_changes=allowed_existing,
+            )
         except Exception as exc:
             events.append(AgentEvent("validate", "Validate", str(exc), "failed"))
             return ToolResult("validate", False, f"validation failed: {exc}", error_type="validation_error", retryable=True, next_action="inspect_validation_error")
@@ -507,6 +514,13 @@ class ToolRuntime:
             rel_paths = list(self.ledger.files_edited)
         return [self.project_root / path for path in rel_paths]
 
+    def _expected_validation_targets(self, touched: list[Path]) -> list[Path]:
+        rel_paths = [*self.ledger.files_edited]
+        if self.current_changed_files:
+            rel_paths.extend(self.current_changed_files())
+        rel_paths.extend(path.relative_to(self.project_root).as_posix() for path in touched if _is_under(path, self.project_root))
+        return [self.project_root / path for path in dict.fromkeys(str(path).replace("\\", "/") for path in rel_paths if path)]
+
     @staticmethod
     def _malformed_tool_call(call: ParsedToolCall, events: list[AgentEvent]) -> ToolResult:
         attempted = str(call.arguments.get("name", "unknown"))
@@ -628,6 +642,14 @@ def _type_name(expected_type: type | tuple[type, ...]) -> str:
     if isinstance(expected_type, tuple):
         return " or ".join(item.__name__ for item in expected_type)
     return expected_type.__name__
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _classify_read_error(exc: Exception) -> str:
