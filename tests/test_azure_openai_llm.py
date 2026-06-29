@@ -214,6 +214,7 @@ class AzureOpenAILlmTests(unittest.TestCase):
         )
 
         self.assertEqual(client.base_url, "https://aimark.example/openai/v1")
+        self.assertEqual(client.timeout_seconds, 300)
 
     def test_provider_config_loads_base_url_from_project_src_import(self) -> None:
         src = self.root / "src"

@@ -248,6 +248,8 @@ class ConfigSessionIndexTests(unittest.TestCase):
     def test_default_config_has_long_task_workplan_limits(self) -> None:
         loaded = load_config(self.root)
 
+        self.assertEqual(loaded.config["model"]["timeout_seconds"], 300)
+        self.assertEqual(loaded.config["model"]["timeout_grace_seconds"], 30)
         self.assertEqual(loaded.config["agent"]["max_tool_iterations"], 200)
         self.assertEqual(loaded.config["agent"]["max_work_items_per_prompt"], 200)
         self.assertEqual(loaded.config["agent"]["max_item_attempts"], 3)

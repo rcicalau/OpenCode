@@ -1,5 +1,6 @@
 [model]
-timeout_seconds = 75
+timeout_seconds = 300
+timeout_grace_seconds = 30
 
 [model.roles.main]
 provider = "azure_openai"

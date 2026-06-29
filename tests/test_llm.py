@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codebuddy.llm import FakeLLMClient, LLMResponse, Message, collect_sse_response, iter_sse_content
+from codebuddy.llm import FakeLLMClient, LLMResponse, Message, OpenAICompatibleClient, collect_sse_response, iter_sse_content
 from codebuddy.errors import CodeBuddyError
 from codebuddy.tool_calls import MALFORMED_TOOL_CALL_NAME, ParsedToolCall, parse_native_tool_calls
 
@@ -103,6 +103,14 @@ class LLMTests(unittest.TestCase):
 
         self.assertEqual([message.content for message in fake.calls[0]], ["first"])
         self.assertEqual([message.content for message in fake.calls[1]], ["first", "second"])
+
+    def test_openai_compatible_client_defaults_to_long_timeout(self) -> None:
+        client = OpenAICompatibleClient.from_provider_config(
+            {"api_key": "test-key", "base_url": "https://provider.example/v1"},
+            "gpt-test",
+        )
+
+        self.assertEqual(client.timeout_seconds, 300)
 
 
 if __name__ == "__main__":

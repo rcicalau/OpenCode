@@ -52,7 +52,7 @@ class OpenAICompatibleClient:
         api_key: str,
         model: str,
         endpoint_path: str = "/chat/completions",
-        timeout_seconds: int = 60,
+        timeout_seconds: int = 300,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.endpoint_path = endpoint_path
@@ -75,7 +75,7 @@ class OpenAICompatibleClient:
         if not base_url:
             raise ConfigError("missing provider base_url")
         endpoint_path = str(provider.get("endpoint_path", "/chat/completions"))
-        timeout_seconds = provider.get("timeout_seconds", 60)
+        timeout_seconds = provider.get("timeout_seconds", 300)
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
             raise ConfigError("provider timeout_seconds must be a positive number")
         return cls(

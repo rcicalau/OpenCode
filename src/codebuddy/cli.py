@@ -372,7 +372,8 @@ def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, 
         max_work_items_per_prompt=int(config.get("agent", {}).get("max_work_items_per_prompt", 200)),
         max_item_attempts=int(config.get("agent", {}).get("max_item_attempts", 3)),
         no_progress_repeat_limit=int(config.get("agent", {}).get("no_progress_repeat_limit", 8)),
-        model_timeout_seconds=float(config.get("model", {}).get("timeout_seconds", 75)),
+        model_timeout_seconds=float(config.get("model", {}).get("timeout_seconds", 300)),
+        model_timeout_grace_seconds=float(config.get("model", {}).get("timeout_grace_seconds", 30)),
         rate_limit_retries=int(config.get("agent", {}).get("rate_limit_retries", 4)),
         rate_limit_backoff_seconds=float(config.get("agent", {}).get("rate_limit_backoff_seconds", 2)),
     )
@@ -444,7 +445,7 @@ def build_llm_client(config: dict):
     if not isinstance(provider, dict):
         raise ConfigError(f"unknown provider: {provider_name}")
     provider = dict(provider)
-    provider.setdefault("timeout_seconds", config.get("model", {}).get("timeout_seconds", 75))
+    provider.setdefault("timeout_seconds", config.get("model", {}).get("timeout_seconds", 300))
     if provider_name == "azure_openai":
         from .azure_openai_llm import AzureAuthOpenAIClient
 

@@ -179,7 +179,8 @@ class CodeBuddyAgent:
         max_work_items_per_prompt: int = 200,
         max_item_attempts: int = 3,
         no_progress_repeat_limit: int = 8,
-        model_timeout_seconds: float = 75,
+        model_timeout_seconds: float = 300,
+        model_timeout_grace_seconds: float = 30,
         rate_limit_retries: int = 4,
         rate_limit_backoff_seconds: float = 2,
     ) -> None:
@@ -207,6 +208,9 @@ class CodeBuddyAgent:
         if model_timeout_seconds <= 0:
             raise ValueError("model_timeout_seconds must be positive")
         self.model_timeout_seconds = float(model_timeout_seconds)
+        if model_timeout_grace_seconds < 0:
+            raise ValueError("model_timeout_grace_seconds must be non-negative")
+        self.model_timeout_grace_seconds = float(model_timeout_grace_seconds)
         if rate_limit_retries < 0:
             raise ValueError("rate_limit_retries must be non-negative")
         if rate_limit_backoff_seconds < 0:
@@ -398,9 +402,10 @@ class CodeBuddyAgent:
 
         Thread(target=run_request, name="codebuddy-llm", daemon=True).start()
         try:
-            status, payload = result_queue.get(timeout=self.model_timeout_seconds)
+            status, payload = result_queue.get(timeout=self.model_timeout_seconds + self.model_timeout_grace_seconds)
         except Empty as exc:
-            raise CodeBuddyError(f"model request timed out after {self.model_timeout_seconds:g}s") from exc
+            grace = f" plus {self.model_timeout_grace_seconds:g}s grace" if self.model_timeout_grace_seconds else ""
+            raise CodeBuddyError(f"model request timed out after {self.model_timeout_seconds:g}s{grace}") from exc
         if status == "ok":
             return payload
         if isinstance(payload, CodeBuddyError):

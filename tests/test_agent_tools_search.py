@@ -514,6 +514,7 @@ def handle():
             ValidationHarness(self.root, self.command),
             max_tool_iterations=3,
             model_timeout_seconds=0.05,
+            model_timeout_grace_seconds=0,
         )
 
         try:

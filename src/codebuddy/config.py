@@ -16,7 +16,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on Python < 3.1
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "model": {
-        "timeout_seconds": 75,
+        "timeout_seconds": 300,
+        "timeout_grace_seconds": 30,
         "roles": {
             "main": {
                 "provider": "azure_openai",
@@ -156,9 +157,12 @@ def validate_config(config: dict[str, Any]) -> None:
     timeout = config["commands"].get("default_timeout_seconds")
     if not isinstance(timeout, int) or timeout <= 0:
         raise ConfigError("commands.default_timeout_seconds must be a positive integer")
-    model_timeout = config["model"].get("timeout_seconds", 75)
+    model_timeout = config["model"].get("timeout_seconds", 300)
     if not isinstance(model_timeout, (int, float)) or model_timeout <= 0:
         raise ConfigError("model.timeout_seconds must be a positive number")
+    model_timeout_grace = config["model"].get("timeout_grace_seconds", 30)
+    if not isinstance(model_timeout_grace, (int, float)) or model_timeout_grace < 0:
+        raise ConfigError("model.timeout_grace_seconds must be a non-negative number")
     validations = config["validation"].get("commands")
     if not isinstance(validations, list) or not all(isinstance(item, str) for item in validations):
         raise ConfigError("validation.commands must be a list of strings")

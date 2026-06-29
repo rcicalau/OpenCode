@@ -28,7 +28,7 @@ class AzureAuthOpenAIClient:
         token_method: str = DEFAULT_TOKEN_METHOD,
         project_root: Path | None = None,
         verify_ssl: bool = False,
-        timeout_seconds: int = 75,
+        timeout_seconds: int = 300,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -53,7 +53,7 @@ class AzureAuthOpenAIClient:
             base_url = load_import_value(str(base_url_import), project_root)
         if not base_url:
             raise ConfigError(f"missing provider base_url; configure {base_url_import or 'base_url'}")
-        timeout_seconds = provider.get("timeout_seconds", 75)
+        timeout_seconds = provider.get("timeout_seconds", 300)
         if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
             raise ConfigError("provider timeout_seconds must be a positive number")
         return cls(
