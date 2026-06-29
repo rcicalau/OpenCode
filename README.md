@@ -133,17 +133,10 @@ Large execution objectives such as "document each file in the codebase" are spli
 
 When chat starts with unfinished work in the project, Code Buddy shows a short resume summary and asks whether to continue or start fresh. Starting fresh opens a new session and clears the active work-plan pointer.
 
-When you start it inside a git repo, or a folder with `.buddy\config.toml`, `pyproject.toml`, `SPEC.md`, or `AGENTS.md`, that folder is the project root. You can also bind it explicitly:
+When you start it from a terminal, the terminal's current folder is the project root. If you start inside a subfolder of an already configured Buddy project, Code Buddy reuses the nearest parent with `BUDDY.md` or `.buddy` state. You can also bind it explicitly for a one-off launch:
 
 ```cmd
 buddy --root C:\path\to\project chat
-```
-
-Or for the current terminal:
-
-```cmd
-set CODEBUDDY_PROJECT_ROOT=C:\path\to\project
-buddy chat
 ```
 
 Each project gets its own `.buddy` state, so opening Code Buddy in project A resumes project A, and opening it in project B resumes project B.

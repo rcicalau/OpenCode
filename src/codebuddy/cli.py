@@ -77,7 +77,7 @@ def _main(argv: list[str] | None = None) -> int:
     launch_root = resolve_launch_start_dir()
     root = resolve_project_root(explicit_root, start=launch_root)
     interactive_work = (command == "chat" or bool(prompt_args)) and sys.stdin.isatty()
-    has_fixed_root = bool(explicit_root or os.environ.get("CODEBUDDY_PROJECT_ROOT"))
+    has_fixed_root = bool(explicit_root)
     if interactive_work and not has_fixed_root:
         set_project_binding(launch_root, root)
     if interactive_work:

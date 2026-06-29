@@ -85,18 +85,23 @@ class ConfigSessionIndexTests(unittest.TestCase):
 
         self.assertEqual(find_project_root(project), project.resolve())
 
-    def test_resolve_project_root_honors_explicit_and_environment(self) -> None:
+    def test_resolve_project_root_honors_explicit_and_ignores_environment_root(self) -> None:
         explicit = self.root / "explicit"
         env_root = self.root / "env-root"
+        cwd_root = self.root / "cwd-root"
         explicit.mkdir()
         env_root.mkdir()
+        cwd_root.mkdir()
         old_root = os.environ.get("CODEBUDDY_PROJECT_ROOT")
         os.environ["CODEBUDDY_PROJECT_ROOT"] = str(env_root)
+        old_cwd = Path.cwd()
 
         try:
+            os.chdir(cwd_root)
             self.assertEqual(resolve_project_root(explicit), explicit.resolve())
-            self.assertEqual(resolve_project_root(), env_root.resolve())
+            self.assertEqual(resolve_project_root(), cwd_root.resolve())
         finally:
+            os.chdir(old_cwd)
             if old_root is None:
                 os.environ.pop("CODEBUDDY_PROJECT_ROOT", None)
             else:

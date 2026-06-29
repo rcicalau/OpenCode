@@ -171,31 +171,34 @@ class CliLlmAgentGitTests(unittest.TestCase):
         self.assertTrue(project_map.exists())
         self.assertIn("Mapped Project", project_map.read_text(encoding="utf-8"))
 
-    def test_project_root_env_binds_state_to_that_project(self) -> None:
-        project = Path(self.tmp.name) / "env-project"
-        project.mkdir()
+    def test_project_root_env_does_not_override_terminal_cwd(self) -> None:
+        stale = Path(self.tmp.name) / "env-project"
+        stale.mkdir()
         old = os.environ.get("CODEBUDDY_PROJECT_ROOT")
-        os.environ["CODEBUDDY_PROJECT_ROOT"] = str(project)
+        os.environ["CODEBUDDY_PROJECT_ROOT"] = str(stale)
+        stdout = StringIO()
         try:
-            self.assertEqual(main(["status"]), 0)
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["status"]), 0)
         finally:
             if old is None:
                 os.environ.pop("CODEBUDDY_PROJECT_ROOT", None)
             else:
                 os.environ["CODEBUDDY_PROJECT_ROOT"] = old
 
-        self.assertTrue((project / ".buddy" / "sessions" / "current.json").exists())
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]), self.root.resolve())
+        self.assertTrue((self.root / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((stale / ".buddy").exists())
 
-    def test_start_dir_env_is_used_as_root_resolution_start(self) -> None:
-        install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
+    def test_start_dir_env_matching_cwd_is_harmless(self) -> None:
         caller_project = Path(self.tmp.name) / "caller-project"
-        install_dir.mkdir(parents=True)
         caller_project.mkdir()
         (caller_project / "pyproject.toml").write_text("[project]\nname='target'\n", encoding="utf-8")
         old = os.environ.get("CODEBUDDY_START_DIR")
         os.environ["CODEBUDDY_START_DIR"] = str(caller_project)
         try:
-            os.chdir(install_dir)
+            os.chdir(caller_project)
             resolved = resolve_project_root()
         finally:
             if old is None:
@@ -205,19 +208,59 @@ class CliLlmAgentGitTests(unittest.TestCase):
 
         self.assertEqual(resolved, caller_project.resolve())
 
+    def test_stale_start_dir_env_does_not_override_terminal_cwd(self) -> None:
+        stale = Path(self.tmp.name) / "stale-buddy-root"
+        caller_project = Path(self.tmp.name) / "new-terminal-project"
+        stale.mkdir()
+        caller_project.mkdir()
+        (stale / "BUDDY.md").write_text("# Old Buddy Project\n", encoding="utf-8")
+        old = os.environ.get("CODEBUDDY_START_DIR")
+        os.environ["CODEBUDDY_START_DIR"] = str(stale)
+        stdout = StringIO()
+
+        try:
+            os.chdir(caller_project)
+            with redirect_stdout(stdout):
+                self.assertEqual(main(["status"]), 0)
+        finally:
+            if old is None:
+                os.environ.pop("CODEBUDDY_START_DIR", None)
+            else:
+                os.environ["CODEBUDDY_START_DIR"] = old
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]), caller_project.resolve())
+        self.assertTrue((caller_project / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((stale / ".buddy").exists())
+
+    def test_last_project_root_does_not_override_terminal_cwd(self) -> None:
+        stale = Path(self.tmp.name) / "last-project"
+        caller_project = Path(self.tmp.name) / "fresh-project"
+        stale.mkdir()
+        caller_project.mkdir()
+        set_last_project_root(stale)
+        stdout = StringIO()
+
+        os.chdir(caller_project)
+        with redirect_stdout(stdout):
+            self.assertEqual(main(["status"]), 0)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(Path(payload["project_root"]), caller_project.resolve())
+        self.assertTrue((caller_project / ".buddy" / "sessions" / "current.json").exists())
+        self.assertFalse((stale / ".buddy").exists())
+
     def test_start_dir_binds_exact_launch_folder_even_under_parent_repo(self) -> None:
         parent = Path(self.tmp.name) / "parent-repo"
         caller_project = parent / "project-1"
-        install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
         caller_project.mkdir(parents=True)
-        install_dir.mkdir(parents=True)
         (parent / ".git").mkdir()
         old = os.environ.get("CODEBUDDY_START_DIR")
         os.environ["CODEBUDDY_START_DIR"] = str(caller_project)
         stdout = StringIO()
 
         try:
-            os.chdir(install_dir)
+            os.chdir(caller_project)
             with redirect_stdout(stdout):
                 self.assertEqual(main(["status"]), 0)
         finally:
@@ -234,16 +277,14 @@ class CliLlmAgentGitTests(unittest.TestCase):
     def test_start_dir_inside_configured_buddy_project_reuses_project_root(self) -> None:
         target = Path(self.tmp.name) / "configured-target"
         nested = target / "tools" / "scripts"
-        install_dir = Path(self.tmp.name) / "install" / "CodeBuddy"
         nested.mkdir(parents=True)
-        install_dir.mkdir(parents=True)
         (target / "BUDDY.md").write_text("# Configured Target\n", encoding="utf-8")
         old = os.environ.get("CODEBUDDY_START_DIR")
         os.environ["CODEBUDDY_START_DIR"] = str(nested)
         stdout = StringIO()
 
         try:
-            os.chdir(install_dir)
+            os.chdir(nested)
             with redirect_stdout(stdout):
                 self.assertEqual(main(["status"]), 0)
         finally:
@@ -496,10 +537,8 @@ model = "sonar-pro"
 
     def test_doctor_uses_start_dir_project_src_for_ai_mart_imports(self) -> None:
         target = Path(self.tmp.name) / "other-project"
-        install_dir = Path(self.tmp.name) / "buddy-install"
         target_src = target / "src"
         target_src.mkdir(parents=True)
-        install_dir.mkdir()
         (target_src / "ai_mart.py").write_text(
             'base_url = "https://other-project.example/openai/v1"\n'
             "class AuthClient:\n"
@@ -520,7 +559,7 @@ model = "sonar-pro"
         stdout = StringIO()
 
         try:
-            os.chdir(install_dir)
+            os.chdir(target)
             with redirect_stdout(stdout):
                 code = main(["doctor"])
         finally:
@@ -539,10 +578,8 @@ model = "sonar-pro"
         target = Path(self.tmp.name) / "configured-project"
         nested = target / "tools" / "scripts"
         target_src = target / "src"
-        install_dir = Path(self.tmp.name) / "buddy-install"
         nested.mkdir(parents=True)
         target_src.mkdir(parents=True)
-        install_dir.mkdir()
         (target / "BUDDY.md").write_text("# Configured Project\n", encoding="utf-8")
         (target_src / "ai_mart.py").write_text(
             'base_url = "https://configured-project.example/openai/v1"\n'
@@ -564,7 +601,7 @@ model = "sonar-pro"
         stdout = StringIO()
 
         try:
-            os.chdir(install_dir)
+            os.chdir(nested)
             with redirect_stdout(stdout):
                 code = main(["doctor"])
         finally:

@@ -71,17 +71,20 @@ def is_buddy_project_marker(path: Path) -> bool:
 def resolve_launch_start_dir(start: str | Path | None = None) -> Path:
     if start:
         return Path(start).expanduser().resolve()
-    if os.environ.get("CODEBUDDY_START_DIR"):
-        return Path(str(os.environ["CODEBUDDY_START_DIR"])).expanduser().resolve()
-    return Path.cwd().resolve()
+    cwd = Path.cwd().resolve()
+    env_start = os.environ.get("CODEBUDDY_START_DIR")
+    if not env_start:
+        return cwd
+    try:
+        captured = Path(env_start).expanduser().resolve()
+    except OSError:
+        return cwd
+    return captured if captured == cwd else cwd
 
 
 def resolve_project_root(explicit_root: str | Path | None = None, start: Path | None = None) -> Path:
     if explicit_root:
         return Path(explicit_root).expanduser().resolve()
-    env_root = os.environ.get("CODEBUDDY_PROJECT_ROOT")
-    if env_root:
-        return Path(env_root).expanduser().resolve()
     start_root = resolve_launch_start_dir(start)
     return find_buddy_project_root(start_root) or start_root
 
