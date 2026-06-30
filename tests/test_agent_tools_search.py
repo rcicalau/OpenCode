@@ -675,9 +675,36 @@ def handle():
 
         rendered = [(event.title, event.detail) for event in seen]
         self.assertIn(("Thinking summary", "Grounding the answer in project context before responding."), rendered)
-        self.assertIn(("Thinking summary", "Reading README.md to inspect the requested context."), rendered)
+        self.assertIn(("Thinking summary", "I will read README.md because the next step needs exact file contents."), rendered)
         self.assertTrue(any(title == "Observation" and "read_text succeeded" in detail for title, detail in rendered))
         self.assertTrue(any(getattr(event, "model", "") == "main/fake" for event in seen if event.title == "Thinking summary"))
+
+    def test_live_event_sink_streams_model_tool_rationale_before_tool_event(self) -> None:
+        (self.root / "README.md").write_text("visible rationale\n", encoding="utf-8")
+        seen = []
+        agent = self.make_agent(
+            [
+                LLMResponse(
+                    "I will read README.md because the answer depends on repository-local context.",
+                    tool_calls=[ParsedToolCall("read_text", {"path": "README.md"})],
+                ),
+                "Read it.",
+            ],
+            main_model_label="azure_openai/openai/gpt-5.4",
+        )
+
+        agent.handle("/ask Read README", event_sink=seen.append)
+
+        titles = [event.title for event in seen]
+        summary_index = next(
+            index
+            for index, event in enumerate(seen)
+            if event.title == "Thinking summary"
+            and "repository-local context" in event.detail
+            and event.model == "azure_openai/openai/gpt-5.4"
+        )
+        read_index = titles.index("Read")
+        self.assertLess(summary_index, read_index)
 
     def test_model_route_events_identify_main_and_research_models(self) -> None:
         class StubResearcher:

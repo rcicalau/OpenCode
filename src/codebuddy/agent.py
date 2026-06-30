@@ -313,6 +313,8 @@ class CodeBuddyAgent:
                 "If context is insufficient, call explore_project first, then inspect files with read/search tools instead of guessing. "
                 "In chat or scope mode, stay read-only: explore, search, and read are allowed; edits and shell commands are not. "
                 "For execution tasks, keep calling tools until the objective is complete or blocked. "
+                "Before calling any tool, include a short visible Thinking summary in normal assistant text explaining "
+                "why that tool is the right next step. Keep it to one or two sentences; do not include hidden chain-of-thought. "
                 "For edits, do not use native JSON tool calls. Use raw edit blocks so multiline code cannot break JSON:\n"
                 "<codebuddy_replace path=\"relative/path.py\">\n<old>\nexact old text\n</old>\n<new>\nexact new text\n</new>\n</codebuddy_replace>\n"
                 "For guarded whole-file rewrites after reading a file, use:\n"
@@ -334,13 +336,13 @@ class CodeBuddyAgent:
                 label = f"request {iteration + 1}"
                 if self.max_tool_iterations is not None:
                     label = f"{label}/{self.max_tool_iterations}"
-                events.append(AgentEvent("model", "Model", label, "running"))
+                events.append(AgentEvent("model", "Model", label, "running", model=self.main_model_label, role="main"))
             iteration += 1
             try:
                 response = self._complete_model(messages, tool_schemas, events)
             except CodeBuddyError as exc:
                 self.ledger.objective_state = BLOCKED
-                events.append(AgentEvent("model", "Model", str(exc), "failed"))
+                events.append(AgentEvent("model", "Model", str(exc), "failed", model=self.main_model_label, role="main"))
                 return f"Model request failed: {exc}"
             try:
                 calls = self._collect_tool_calls(response)
@@ -361,7 +363,8 @@ class CodeBuddyAgent:
                 break
             signature = _tool_call_signature(calls)
             changed_count_before = len(self._current_changed_files)
-            self._emit_visible_thought(events, _tool_call_visible_thought(calls))
+            visible_rationale = _visible_tool_rationale(visible_content)
+            self._emit_visible_thought(events, visible_rationale or _tool_call_visible_thought(calls))
             tool_results = self._run_tool_calls(calls, events)
             self._record_recovery_events(tool_results)
             self._emit_visible_observation(events, _tool_result_visible_observation(tool_results))
@@ -417,7 +420,16 @@ class CodeBuddyAgent:
                 delay = self.rate_limit_backoff_seconds * attempt
                 if events is not None:
                     reason = "rate limited" if _is_rate_limit_error(exc) else "timed out"
-                    events.append(AgentEvent("model", "Model", f"{reason}; retry {attempt}/{self.rate_limit_retries} in {delay:g}s", "running"))
+                    events.append(
+                        AgentEvent(
+                            "model",
+                            "Model",
+                            f"{reason}; retry {attempt}/{self.rate_limit_retries} in {delay:g}s",
+                            "running",
+                            model=self.main_model_label,
+                            role="main",
+                        )
+                    )
                 if delay:
                     time.sleep(delay)
         raise CodeBuddyError("model request failed after retries")
@@ -963,28 +975,28 @@ def _tool_call_visible_thought(calls: list[ParsedToolCall]) -> str:
 def _single_tool_visible_thought(call: ParsedToolCall) -> str:
     path = call.arguments.get("path")
     if call.name == "read_text" and path:
-        return f"Reading {path} to inspect the requested context."
+        return f"I will read {path} because the next step needs exact file contents."
     if call.name == "search":
         pattern = call.arguments.get("pattern", "")
-        return f"Searching for {pattern!r} to locate relevant code."
+        return f"I will search for {pattern!r} because the relevant code needs to be located before changing anything."
     if call.name == "explore_project":
         focus = call.arguments.get("focus")
         if focus:
-            return f"Mapping the project around {focus!r} before narrowing the files."
-        return "Mapping the project before choosing specific files."
+            return f"I will map the project around {focus!r} so the next reads are targeted."
+        return "I will map the project before choosing specific files."
     if call.name in {"edit_exact_replace", "rewrite_file", "apply_unified_diff"} and path:
-        return f"Applying a guarded edit to {path}; the diff will be shown."
+        return f"I will apply a guarded edit to {path}; the diff will be shown before continuing."
     if call.name == "create_file" and path:
-        return f"Creating {path} through the edit broker; the diff will be shown."
+        return f"I will create {path} through the edit broker so the new file is tracked and reversible."
     if call.name == "run_command":
-        return "Running a policy-checked shell command and capturing the result."
+        return "I will run a policy-checked shell command and use its output to decide the next step."
     if call.name == "validate":
-        return "Running validation to check whether the changes are safe."
+        return "I will run validation to check whether the changes are safe."
     if call.name.startswith("git_"):
         return _git_tool_visible_thought(call.name)
     if call.name == MALFORMED_TOOL_CALL_NAME:
-        return "Recovering from a malformed tool call before making further changes."
-    return f"Calling {_display_tool_name(call.name)} to continue."
+        return "I will recover from a malformed tool call before making further changes."
+    return f"I will call {_display_tool_name(call.name)} because it is the next available step."
 
 
 def _git_tool_visible_thought(name: str) -> str:
@@ -1027,6 +1039,27 @@ def _single_tool_result_visible_observation(result: ToolResult) -> str:
 
 def _display_tool_name(name: str) -> str:
     return name.removeprefix("git_").replace("_", " ")
+
+
+def _visible_tool_rationale(content: str, max_chars: int = 700) -> str:
+    text = " ".join((content or "").strip().split())
+    if not text:
+        return ""
+    for prefix in ("Thinking summary:", "Rationale:", "Plan:", "Next step:"):
+        if text.lower().startswith(prefix.lower()):
+            text = text[len(prefix) :].strip()
+            break
+    if _looks_like_private_reasoning_dump(text):
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
+
+
+def _looks_like_private_reasoning_dump(text: str) -> bool:
+    lowered = text.lower()
+    markers = ("chain of thought", "hidden reasoning", "private reasoning", "scratchpad")
+    return any(marker in lowered for marker in markers)
 
 
 def _model_label_from_client(client, role: str) -> str:

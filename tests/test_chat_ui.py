@@ -125,6 +125,43 @@ class ChatUiTests(unittest.TestCase):
         self.assertIn("I will inspect, patch", output)
         self.assertIn("validate.", output)
 
+    def test_renderer_prints_model_attributed_running_event(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            ChatRenderer().events(
+                [
+                    SimpleNamespace(
+                        kind="model",
+                        title="Model",
+                        detail="request 1/200",
+                        status="running",
+                        model="azure_openai/openai/gpt-5.4",
+                    )
+                ]
+            )
+
+        output = stdout.getvalue()
+        self.assertIn("Model [azure_openai/openai/gpt-5.4]", output)
+        self.assertIn("request 1/200", output)
+
+    def test_renderer_prints_tool_events_as_tool_use(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            ChatRenderer().events(
+                [
+                    SimpleNamespace(kind="read", title="Read", detail="README.md (3 lines)", status="done"),
+                ]
+            )
+
+        self.assertIn("Tool use: Read", stdout.getvalue())
+
+    def test_thinking_line_can_show_model(self) -> None:
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            ChatRenderer().thinking("azure_openai/openai/gpt-5.4")
+
+        self.assertIn("Thinking [azure_openai/openai/gpt-5.4]", stdout.getvalue())
+
     def test_renderer_prints_edit_diff_body(self) -> None:
         stdout = StringIO()
         with redirect_stdout(stdout):

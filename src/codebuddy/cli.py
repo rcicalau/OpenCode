@@ -191,7 +191,7 @@ def _main(argv: list[str] | None = None) -> int:
                 bootstrap_memory(root, ledger, config, journal)
                 renderer = ChatRenderer()
                 try:
-                    renderer.thinking()
+                    renderer.thinking(ui_model_label(config, root))
                     result = run_prompt(root, ledger, config, journal, slash_result.followup_prompt, event_sink=renderer.event)
                 except CodeBuddyError as exc:
                     print(f"error: {exc}", file=sys.stderr)
@@ -203,7 +203,7 @@ def _main(argv: list[str] | None = None) -> int:
         bootstrap_memory(root, ledger, config, journal)
         renderer = ChatRenderer()
         try:
-            renderer.thinking()
+            renderer.thinking(ui_model_label(config, root))
             result = run_prompt(root, ledger, config, journal, prompt, event_sink=renderer.event)
         except CodeBuddyError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -371,6 +371,18 @@ def maybe_prompt_for_auth(config: dict) -> None:
     print(result.message)
 
 
+def ui_model_label(config: dict, root: Path) -> str:
+    runtime_config = copy.deepcopy(config)
+    runtime_config["_runtime_project_root"] = str(root)
+    try:
+        return model_route_label(runtime_config, "main")
+    except ConfigError:
+        role = config.get("model", {}).get("roles", {}).get("main", {})
+        provider_name = str(role.get("provider", "azure_openai")) if isinstance(role, dict) else "azure_openai"
+        model = str(role.get("model", "gpt-5.4")) if isinstance(role, dict) else "gpt-5.4"
+        return f"{provider_name}/{model}"
+
+
 def run_prompt(root: Path, ledger, config: dict, journal: Journal, prompt: str, yolo_enabled: bool | None = None, event_sink=None):
     edit_broker, command_broker = build_brokers(root, ledger.session_id, config, journal, yolo_enabled)
     llm_config = copy.deepcopy(config)
@@ -464,7 +476,7 @@ def chat_loop(
                 continue
             prompt = slash_result.followup_prompt
         try:
-            renderer.thinking()
+            renderer.thinking(ui_model_label(config, root))
             result = run_prompt(root, ledger, config, journal, prompt, yolo_state.get("enabled", False), renderer.event)
         except CodeBuddyError as exc:
             print(f"error: {exc}", file=sys.stderr)

@@ -121,11 +121,12 @@ class ChatRenderer:
             else:
                 self.console.print(self.text(line, style="dim"))
 
-    def thinking(self) -> None:
+    def thinking(self, model: str | None = None) -> None:
+        label = f"Thinking [{model}]..." if model else "Thinking..."
         if self.console:
-            self.console.print(self.text("Thinking...", style="bold magenta"))
+            self.console.print(self.text(label, style="bold magenta"))
         else:
-            print("Thinking...")
+            print(label)
 
     def events(self, events: Sequence[Any]) -> None:
         for event in events:
@@ -150,9 +151,7 @@ class ChatRenderer:
             "model_route": "magenta",
             "thought": "bright_magenta",
         }.get(kind, "white")
-        display_title = title
-        if model and title in {"Thinking summary", "Observation", "Model route"}:
-            display_title = f"{title} [{model}]"
+        display_title = _display_event_title(kind, title, model)
         prefix_text = _event_prefix(display_title)
         if self.console:
             prefix = self.text(prefix_text, style=f"bold {style}")
@@ -295,4 +294,12 @@ def build_prompt_key_bindings():
 
 
 def _event_prefix(title: str) -> str:
-    return f"{title:<10}" if len(title) < 10 else f"{title}  "
+    return f"{title:<14}" if len(title) < 14 else f"{title}  "
+
+
+def _display_event_title(kind: str, title: str, model: str) -> str:
+    if model and kind in {"model", "model_route", "thought"}:
+        return f"{title} [{model}]"
+    if kind in {"read", "search", "explore", "edit", "shell", "validate", "git"}:
+        return f"Tool use: {title}"
+    return title
